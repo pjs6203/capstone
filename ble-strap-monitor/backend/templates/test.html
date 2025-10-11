@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BLE Monitor - Dashboard</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0f;
+            color: #ffffff;
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        /* 도트 그리드 배경 */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: radial-gradient(circle, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+            background-size: 20px 20px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* 상단 네비게이션 */
+        .top-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 24px;
+            background: rgba(22, 22, 31, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 50px;
+            margin-bottom: 32px;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 18px;
+            font-weight: 700;
+            color: #ffffff;
+            padding: 8px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .logo::before {
+            content: '⚡';
+            font-size: 20px;
+        }
+
+        .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .time-display {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 30px;
+            font-size: 13px;
+            color: #9ca3af;
+            font-weight: 500;
+        }
+
+        .menu-btn {
+            width: 48px;
+            height: 48px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+        }
+
+        .menu-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: #6366f1;
+            transform: rotate(90deg);
+        }
+
+        .menu-btn::before,
+        .menu-btn::after,
+        .menu-btn span {
+            content: '';
+            position: absolute;
+            width: 18px;
+            height: 2px;
+            background: #ffffff;
+            transition: all 0.3s;
+        }
+
+        .menu-btn::before {
+            transform: translateY(-5px);
+        }
+
+        .menu-btn::after {
+            transform: translateY(5px);
+        }
+
+        /* 통계 카드 그리드 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 32px;
+        }
+
+        .stat-card {
+            background: rgba(22, 22, 31, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+            transition: all 0.3s;
+        }
+
+        .stat-card:hover {
+            border-color: #6366f1;
+            transform: translateY(-4px);
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: #9ca3af;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .stat-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .stat-change {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 8px;
+        }
+
+        /* 메인 콘텐츠 영역 */
+        .content-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background: rgba(22, 22, 31, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .card-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        /* 기기 카드 */
+        .devices-grid {
+            display: grid;
+            gap: 12px;
+        }
+
+        .device-item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s;
+        }
+
+        .device-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: #6366f1;
+        }
+
+        /* 미착용 직원 강조 */
+        .device-item.alert {
+            background: rgba(239, 68, 68, 0.1);
+            border: 2px solid rgba(239, 68, 68, 0.5);
+            animation: glow 2s ease-in-out infinite;
+        }
+
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.3); }
+            50% { box-shadow: 0 0 30px rgba(239, 68, 68, 0.6); }
+        }
+
+        .device-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .status-dot.active {
+            background: #22c55e;
+        }
+
+        .status-dot.warning {
+            background: #ef4444;
+        }
+
+        .device-name {
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        .device-item.alert .device-name {
+            color: #ef4444;
+            font-weight: 700;
+        }
+
+        .device-meta {
+            font-size: 12px;
+            color: #9ca3af;
+        }
+
+        /* 배지 */
+        .badge {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge.success {
+            background: rgba(34, 197, 94, 0.15);
+            color: #22c55e;
+        }
+
+        .badge.danger {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+
+        /* 버튼 */
+        .btn {
+            padding: 10px 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: #6366f1;
+            transform: translateY(-1px);
+        }
+
+        .btn-primary {
+            background: #6366f1;
+            border-color: #6366f1;
+        }
+
+        .btn-primary:hover {
+            background: #5558e3;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            border-color: #ef4444;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        /* 로그 항목 */
+        .log-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .log-item {
+            background: rgba(255, 255, 255, 0.03);
+            border-left: 3px solid #6366f1;
+            border-radius: 8px;
+            padding: 12px 16px;
+        }
+
+        .log-item.warning {
+            border-left-color: #ef4444;
+        }
+
+        .log-time {
+            font-size: 11px;
+            color: #6b7280;
+            margin-bottom: 4px;
+        }
+
+        .log-message {
+            font-size: 13px;
+            color: #ffffff;
+        }
+
+        /* 사이드 메뉴 */
+        .side-menu {
+            position: fixed;
+            top: 0;
+            right: -350px;
+            width: 350px;
+            height: 100vh;
+            background: rgba(22, 22, 31, 0.95);
+            backdrop-filter: blur(30px);
+            border-left: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 24px;
+            transition: right 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 1000;
+            overflow-y: auto;
+        }
+
+        .side-menu.active {
+            right: 0;
+        }
+
+        .menu-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .menu-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .close-btn {
+            width: 40px;
+            height: 40px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 24px;
+            color: #ffffff;
+        }
+
+        .close-btn:hover {
+            background: rgba(239, 68, 68, 0.2);
+            border-color: #ef4444;
+            transform: rotate(90deg);
+        }
+
+        .menu-section {
+            margin-bottom: 32px;
+        }
+
+        .menu-section-title {
+            font-size: 12px;
+            color: #9ca3af;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .menu-items {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .menu-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: #ffffff;
+            text-decoration: none;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .menu-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: #6366f1;
+            transform: translateX(4px);
+        }
+
+        .menu-item-icon {
+            font-size: 20px;
+        }
+
+        .menu-item-text {
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        /* 오버레이 */
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+            z-index: 999;
+        }
+
+        .overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* 반응형 */
+        @media (max-width: 768px) {
+            .content-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .top-nav {
+                flex-wrap: wrap;
+                gap: 12px;
+            }
+
+            .side-menu {
+                width: 100%;
+                right: -100%;
+            }
+        }
+
+        /* 빈 상태 */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #6b7280;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            opacity: 0.3;
+            margin-bottom: 12px;
+        }
+
+        /* WebSocket 상태 */
+        .ws-status {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .ws-status.connected {
+            background: rgba(34, 197, 94, 0.15);
+            color: #22c55e;
+        }
+
+        .ws-status.disconnected {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+    </style>
+</head>
+<body>
+    <!-- 오버레이 -->
+    <div class="overlay" id="overlay" onclick="closeMenu()"></div>
+
+    <!-- 사이드 메뉴 -->
+    <aside class="side-menu" id="sideMenu">
+        <div class="menu-header">
+            <h2 class="menu-title">메뉴</h2>
+            <div class="close-btn" onclick="closeMenu()">×</div>
+        </div>
+
+        <div class="menu-section">
+            <div class="menu-section-title">페이지</div>
+            <div class="menu-items">
+                <a href="/test" class="menu-item">
+                    <span class="menu-item-icon">🏠</span>
+                    <span class="menu-item-text">대시보드</span>
+                </a>
+                <a href="/admin" class="menu-item">
+                    <span class="menu-item-icon">⚙️</span>
+                    <span class="menu-item-text">관리자 페이지</span>
+                </a>
+            </div>
+        </div>
+
+        <div class="menu-section">
+            <div class="menu-section-title">기능</div>
+            <div class="menu-items">
+                <div class="menu-item" onclick="openDeviceManagement()">
+                    <span class="menu-item-icon">📱</span>
+                    <span class="menu-item-text">기기 관리</span>
+                </div>
+                <div class="menu-item" onclick="openEmployeeManagement()">
+                    <span class="menu-item-icon">👤</span>
+                    <span class="menu-item-text">직원 관리</span>
+                </div>
+                <div class="menu-item" onclick="openLogs()">
+                    <span class="menu-item-icon">📝</span>
+                    <span class="menu-item-text">로그 분석</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="menu-section">
+            <div class="menu-section-title">계정</div>
+            <div class="menu-items">
+                <div class="menu-item" onclick="logout()">
+                    <span class="menu-item-icon">🚪</span>
+                    <span class="menu-item-text">로그아웃</span>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <div class="container">
+        <!-- 상단 네비게이션 -->
+        <nav class="top-nav">
+            <div class="logo">BLE Monitor</div>
+            <div class="nav-actions">
+                <div class="time-display" id="currentTime">--:--:--</div>
+                <span class="ws-status disconnected" id="wsStatus">연결 중...</span>
+                <button class="btn btn-danger" onclick="logout()">로그아웃</button>
+                <div class="menu-btn" onclick="toggleMenu()">
+                    <span></span>
+                </div>
+            </div>
+        </nav>
+
+        <!-- 통계 카드 -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">총 직원</div>
+                <div class="stat-value" id="totalEmployees">0</div>
+                <div class="stat-change">등록된 직원 수</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">현재 착용</div>
+                <div class="stat-value" style="color: #22c55e" id="wearingCount">0</div>
+                <div class="stat-change">실시간 착용 직원</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">미착용</div>
+                <div class="stat-value" style="color: #ef4444" id="unwearingCount">0</div>
+                <div class="stat-change">착용 해제 직원</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">등록 기기</div>
+                <div class="stat-value" style="color: #6366f1" id="totalDevices">0</div>
+                <div class="stat-change">연결된 BLE 기기</div>
+            </div>
+        </div>
+
+        <!-- 메인 콘텐츠 -->
+        <div class="content-grid">
+            <!-- 실시간 모니터링 -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">실시간 모니터링</h2>
+                    <button class="btn btn-primary" onclick="refreshDevices()">새로고침</button>
+                </div>
+                <div class="devices-grid" id="devicesGrid">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📡</div>
+                        <div>등록된 기기가 없습니다</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 최근 로그 -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">최근 이벤트</h2>
+                </div>
+                <div class="log-list" id="logList">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📝</div>
+                        <div>로그가 없습니다</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket 연결
+        const socket = io('http://localhost:5000');
+
+        // 현재 시간 업데이트
+        function updateTime() {
+            const now = new Date();
+            const kstOffset = 9 * 60;
+            const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+            const kstTime = new Date(utcTime + (kstOffset * 60000));
+            
+            const hours = String(kstTime.getHours()).padStart(2, '0');
+            const minutes = String(kstTime.getMinutes()).padStart(2, '0');
+            const seconds = String(kstTime.getSeconds()).padStart(2, '0');
+            
+            document.getElementById('currentTime').textContent = `${hours}:${minutes}:${seconds} KST`;
+        }
+
+        setInterval(updateTime, 1000);
+        updateTime();
+
+        // WebSocket 이벤트
+        socket.on('connect', () => {
+            const status = document.getElementById('wsStatus');
+            status.textContent = '연결됨';
+            status.className = 'ws-status connected';
+            loadData();
+        });
+
+        socket.on('disconnect', () => {
+            const status = document.getElementById('wsStatus');
+            status.textContent = '연결 끊김';
+            status.className = 'ws-status disconnected';
+        });
+
+        socket.on('device_data', (data) => {
+            updateDeviceDisplay(data);
+        });
+
+        socket.on('device_status', (data) => {
+            updateDeviceStatus(data);
+        });
+
+        // 데이터 로드
+        async function loadData() {
+            await Promise.all([
+                loadStats(),
+                loadDevices(),
+                loadLogs()
+            ]);
+        }
+
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/stats/summary');
+                const data = await res.json();
+                
+                document.getElementById('totalEmployees').textContent = data.total_employees || 0;
+                document.getElementById('wearingCount').textContent = data.wearing_count || 0;
+                document.getElementById('unwearingCount').textContent = data.unwearing_count || 0;
+                document.getElementById('totalDevices').textContent = data.total_devices || 0;
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        async function loadDevices() {
+            try {
+                const res = await fetch('/api/devices');
+                const data = await res.json();
+                
+                const container = document.getElementById('devicesGrid');
+                
+                if (!data.devices || data.devices.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📡</div>
+                            <div>등록된 기기가 없습니다</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // 미착용(OPEN) 상태를 맨 위로 정렬
+                const sorted = data.devices.sort((a, b) => {
+                    if (a.state === 'OPEN' && b.state !== 'OPEN') return -1;
+                    if (a.state !== 'OPEN' && b.state === 'OPEN') return 1;
+                    return (a.employee_name || '').localeCompare(b.employee_name || '');
+                });
+
+                container.innerHTML = sorted.map(device => {
+                    const isWearing = device.state === 'CLOSED';
+                    const statusClass = isWearing ? 'active' : 'warning';
+                    const alertClass = !isWearing ? 'alert' : '';
+                    const badgeClass = isWearing ? 'success' : 'danger';
+                    const badgeText = isWearing ? '착용' : '미착용';
+                    const employeeName = device.employee_name || '미배정';
+                    
+                    return `
+                        <div class="device-item ${alertClass}" id="device-${device.device_id}">
+                            <div class="device-info">
+                                <span class="status-dot ${statusClass}"></span>
+                                <div>
+                                    <div class="device-name">${employeeName}</div>
+                                    <div class="device-meta">${device.device_id}</div>
+                                </div>
+                            </div>
+                            <span class="badge ${badgeClass}">${badgeText}</span>
+                        </div>
+                    `;
+                }).join('');
+            } catch (error) {
+                console.error('Failed to load devices:', error);
+            }
+        }
+
+        async function loadLogs() {
+            try {
+                const res = await fetch('/api/logs/events?limit=10');
+                const data = await res.json();
+                
+                const container = document.getElementById('logList');
+                
+                if (!data.logs || data.logs.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📝</div>
+                            <div>로그가 없습니다</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = data.logs.map(log => {
+                    const time = new Date(log.timestamp).toLocaleString('ko-KR');
+                    const warningClass = log.event_type === 'wear_off' ? 'warning' : '';
+                    const employeeName = log.employee_name || '미배정';
+                    const eventText = log.event_type === 'wear_on' ? '착용' : '착용 해제';
+                    
+                    return `
+                        <div class="log-item ${warningClass}">
+                            <div class="log-time">${time}</div>
+                            <div class="log-message">${employeeName} - ${eventText}</div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (error) {
+                console.error('Failed to load logs:', error);
+            }
+        }
+
+        function updateDeviceDisplay(data) {
+            const deviceEl = document.getElementById(`device-${data.device_id}`);
+            if (!deviceEl) {
+                loadDevices(); // 새 기기면 전체 리로드
+                return;
+            }
+
+            const isWearing = data.state === 'CLOSED';
+            const statusClass = isWearing ? 'active' : 'warning';
+            const alertClass = !isWearing ? 'alert' : '';
+            const badgeClass = isWearing ? 'success' : 'danger';
+            const badgeText = isWearing ? '착용' : '미착용';
+            const employeeName = data.employee_name || '미배정';
+
+            deviceEl.className = `device-item ${alertClass}`;
+            deviceEl.innerHTML = `
+                <div class="device-info">
+                    <span class="status-dot ${statusClass}"></span>
+                    <div>
+                        <div class="device-name">${employeeName}</div>
+                        <div class="device-meta">${data.device_id}</div>
+                    </div>
+                </div>
+                <span class="badge ${badgeClass}">${badgeText}</span>
+            `;
+
+            // 미착용이면 맨 위로 이동
+            if (!isWearing) {
+                const container = document.getElementById('devicesGrid');
+                container.prepend(deviceEl);
+            }
+
+            loadStats(); // 통계 업데이트
+        }
+
+        function updateDeviceStatus(data) {
+            console.log('Device status:', data);
+        }
+
+        function refreshDevices() {
+            loadDevices();
+        }
+
+        function toggleMenu() {
+            const menu = document.getElementById('sideMenu');
+            const overlay = document.getElementById('overlay');
+            menu.classList.add('active');
+            overlay.classList.add('active');
+        }
+
+        function closeMenu() {
+            const menu = document.getElementById('sideMenu');
+            const overlay = document.getElementById('overlay');
+            menu.classList.remove('active');
+            overlay.classList.remove('active');
+        }
+
+        function openDeviceManagement() {
+            closeMenu();
+            window.location.href = '/admin#devices';
+        }
+
+        function openEmployeeManagement() {
+            closeMenu();
+            window.location.href = '/admin#employees';
+        }
+
+        function openLogs() {
+            closeMenu();
+            window.location.href = '/admin#logs';
+        }
+
+        async function logout() {
+            if (!confirm('로그아웃하시겠습니까?')) return;
+            
+            try {
+                await fetch('/api/logout', { method: 'POST' });
+                window.location.href = '/login';
+            } catch (error) {
+                window.location.href = '/login';
+            }
+        }
+
+        // 초기 로드
+        document.addEventListener('DOMContentLoaded', () => {
+            loadData();
+            setInterval(loadStats, 5000); // 5초마다 통계 업데이트
+        });
+    </script>
+</body>
+</html>
