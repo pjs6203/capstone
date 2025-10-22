@@ -1,74 +1,62 @@
-# ESP32 <-> PC BLE Test
+# BLE Strap Monitor 실행 가이드
 
-Quick demo to verify BLE communication between an ESP32 (acting as a BLE GATT server) and a PC Python script using `bleak`.
+ESP32 스트랩 모니터링 시스템(ESP32 펌웨어 + Python 백엔드 + React 프론트엔드)을 로컬에서 실행하기 위한 필수 준비 작업과 실행 절차만 정리했습니다.
 
-## Overview
-- ESP32 advertises a custom service UUID: `12345678-1234-1234-1234-1234567890ab`.
-- Notifiable characteristic (`...90ac`) sends a counter every second and also sends responses to commands.
-- Writable characteristic (`...90ad`) accepts UTF-8 commands from the Python client.
-- Python client scans, connects, subscribes to notifications, and writes a test command.
+## 준비 사항
+- ESP32 개발 보드 1대, VL53L0X 거리 센서, 홀 센서(KY-035 등), 릴레이 모듈, 버저
+- 센서 및 액추에이터 배선: VL53L0X SDA→GPIO4, SCL→GPIO5 / 홀 센서 AOUT→GPIO7 / 릴레이→GPIO23 / 버저→GPIO10 (필요 시 코드 상단 상수로 변경 가능)
+- Windows 10/11 PC (블루투스 활성화), Arduino IDE(ESP32 보드 패키지 2.x), Python 3.10 이상, Node.js 18 이상, Git
+- Arduino 라이브러리: Pololu `VL53L0X`, `ESP32 BLE Arduino` (기본 포함)
 
-## Files
-- `esp32_ble_server.ino` : Arduino sketch for ESP32 BLE server.
-- `python_ble_client.py` : Python async client using `bleak`.
+## 1. ESP32 펌웨어 업로드
+1. Arduino IDE에서 `esp32/esp32_firmware.ino`를 엽니다.
+2. `Tools > Board`에서 사용 중인 ESP32 보드와 COM 포트를 선택합니다.
+3. 필요 시 상단의 핀/버저/릴레이 설정 상수를 하드웨어에 맞게 수정합니다.
+4. 스케치를 업로드하고, 시리얼 모니터(115200bps)에서 `[BLE] Advertising started` 메시지로 준비 완료 여부를 확인합니다.
 
-## ESP32 Setup
-1. Open `esp32_ble_server.ino` in Arduino IDE (or PlatformIO).
-2. Select the correct ESP32 board + COM port.
-3. Upload.
-4. Open Serial Monitor @ 115200 to see logs like:
-   ```
-   === ESP32 BLE Server Demo Start ===
-   [BLE] Advertising started. Use Python client to connect.
-   [BLE] Client connected
-   [BLE] Notified: CNT:1
-   ...
-   ```
-
-## Python Environment
-```bash
-pip install bleak
-```
-(Windows 10/11 already supports BLE; make sure Bluetooth is enabled.)
-
-## Run Python Client
-```bash
-python python_ble_client.py
-```
-Expected output:
-```
-[SCAN] Scanning for ESP32-BLE-DEMO or service 12345678-1234-1234-1234-1234567890ab...
-[SCAN] Found target: XX:XX:XX:XX:XX:XX (ESP32-BLE-DEMO)
-[CONNECT] Connecting to XX:XX:XX:XX:XX:XX ...
-[CONNECT] Connected
-[SUB] Subscribing to notifications...
-[WRITE] Sending command: hello-from-pc
-[NOTIFY] ... CNT:1
-[NOTIFY] ... CNT:2
-[NOTIFY] ... RESP:hello-from-pc
-```
-
-## Customizing
-- Change `DEVICE_NAME` or UUIDs in `esp32_ble_server.ino` if you have multiple ESP32 devices.
-- Replace the counter payload with real sensor data (e.g., distance from VL53L0X) in the `loop()`:
-  ```cpp
-  // Example: char payload[32]; snprintf(payload, sizeof(payload), "DIST:%u", distance_mm);
+## 2. 백엔드 준비 및 실행
+1. PowerShell에서 백엔드 폴더로 이동합니다.
+  ```powershell
+  cd ble-strap-monitor\backend
   ```
-- For binary data, build a small struct and send bytes with `setValue((uint8_t*)&structObj, sizeof(structObj));`.
+2. (선택) 가상환경을 만들고 활성화합니다.
+  ```powershell
+  python -m venv .venv
+  .\.venv\Scripts\Activate.ps1
+  ```
+3. 필요한 패키지를 설치합니다.
+  ```powershell
+  pip install -r requirements.txt
+  ```
+4. 서버를 실행합니다.
+  ```powershell
+  python app.py
+  ```
+  - 최초 실행 시 같은 폴더에 `strap_monitor.db`가 자동 생성됩니다.
+  - 관리자 계정 기본값은 `admin / admin123`입니다.
+  - 백엔드는 BLE 디바이스 루프가 단일 프로세스에서 돌아야 하므로 `flask run` 대신 `python app.py`를 사용하세요.
 
-## Troubleshooting
-| Issue | Fix |
-|-------|-----|
-| Python scan finds nothing | Move ESP32 closer, ensure advertising started, disable other BLE apps |
-| Connect fails | Power cycle ESP32, re-upload sketch, update ESP32 Arduino core |
-| Notifications not received | Check you subscribed to the NOTIFY characteristic UUID |
-| Write errors | Ensure you used the WRITE characteristic UUID, not the notify one |
-| Garbled text | Confirm UTF-8 strings; for binary remove `.decode()` in handler |
+## 3. 프론트엔드 준비 및 실행
+1. 새 PowerShell 창에서 프론트엔드 폴더로 이동합니다.
+  ```powershell
+  cd ble-strap-monitor\frontend
+  ```
+2. 의존성을 설치합니다.
+  ```powershell
+  npm install
+  ```
+3. 개발 서버를 실행합니다.
+  ```powershell
+  npm run dev
+  ```
+4. 브라우저에서 `http://localhost:3000`을 열고, 백엔드 관리자 페이지(`http://localhost:5000/admin`)와 같은 자격증명으로 로그인합니다.
 
-## Extending
-- Add a second notify char for high-rate sensor streaming.
-- Implement a simple command protocol: `SET_RATE:100`, `PING`, etc.
-- Use a ring buffer and packet sequence numbers to detect drops.
+## 4. 실행 흐름
+- 백엔드를 먼저 실행하고, 이어서 프론트엔드를 실행합니다.
+- 관리자 페이지에 접속해 BLE 스캔 → ESP32 디바이스 등록을 수행하면 자동으로 연결이 유지됩니다.
+- 릴레이/버저 테스트, 정책 설정 등은 관리자 페이지의 디버그 패널에서 사용할 수 있습니다.
 
-## License
-Demo code provided as-is for educational purposes.
+## 5. 기본 점검
+- Windows 블루투스가 꺼져 있으면 백엔드가 ESP32를 찾을 수 없습니다.
+- 다른 BLE 앱(nRF Connect 등)이 ESP32에 연결되어 있으면 백엔드 연결이 거부됩니다.
+- 핀 배선을 변경한 경우 `esp32_firmware.ino` 상단 상수를 함께 수정해야 합니다.
