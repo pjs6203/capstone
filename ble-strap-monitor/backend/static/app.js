@@ -17,6 +17,7 @@ let policyBroadcastState = {
     lastUpdated: null,
     command: null
 };
+let debugInitialized = false;
 
 function formatKST(dateInput) {
     if (!dateInput) {
@@ -539,6 +540,7 @@ function navigateTo(pageName) {
         'monitoring': '실시간 모니터링',
         'employees': '직원 관리',
         'devices': '디바이스 현황',
+        'debug': '디버그 제어',
         'logs': '이력 조회',
         'settings': '설정'
     };
@@ -561,6 +563,9 @@ function loadPageData(pageName) {
             break;
         case 'devices':
             loadDevices();
+            break;
+        case 'debug':
+            loadDebugTools();
             break;
         case 'logs':
             loadLogs();
@@ -1255,6 +1260,7 @@ async function loadDevices() {
         }).join('');
 
         renderPolicySummary();
+        updateDebugDeviceOptions();
     } catch (error) {
         console.error('Failed to load devices:', error);
     }
@@ -1352,6 +1358,296 @@ async function removeDevice(deviceId) {
         showNotification('삭제 중 오류가 발생했습니다', 'danger');
         console.error('Failed to remove device:', error);
     }
+}
+
+function resolveDeviceId(device) {
+    if (!device) return null;
+    return device.id || device.device_id || device.address || null;
+}
+
+function loadDebugTools() {
+    initDebugControls();
+    if (!Array.isArray(devices) || devices.length === 0) {
+        loadDevices().then(() => {
+            updateDebugDeviceOptions();
+            updateDebugDeviceInfo();
+        });
+    } else {
+        updateDebugDeviceOptions();
+        updateDebugDeviceInfo();
+    }
+}
+
+function initDebugControls() {
+    if (debugInitialized) return;
+
+    const select = document.getElementById('debug-device-select');
+    if (select) {
+        select.addEventListener('change', () => {
+            updateDebugDeviceInfo();
+            updateDebugLastResponse(null);
+        });
+    }
+
+    const relayOnBtn = document.getElementById('relay-on-btn');
+    if (relayOnBtn) relayOnBtn.addEventListener('click', () => sendRelayCommand('on'));
+    const relayOffBtn = document.getElementById('relay-off-btn');
+    if (relayOffBtn) relayOffBtn.addEventListener('click', () => sendRelayCommand('off'));
+    const relayPulseBtn = document.getElementById('relay-pulse-btn');
+    if (relayPulseBtn) relayPulseBtn.addEventListener('click', () => sendRelayCommand('pulse'));
+
+    const buzzerBeepBtn = document.getElementById('buzzer-beep-btn');
+    if (buzzerBeepBtn) buzzerBeepBtn.addEventListener('click', () => sendBuzzerCommand('beep'));
+    const buzzerOnBtn = document.getElementById('buzzer-on-btn');
+    if (buzzerOnBtn) buzzerOnBtn.addEventListener('click', () => sendBuzzerCommand('on'));
+    const buzzerOffBtn = document.getElementById('buzzer-off-btn');
+    if (buzzerOffBtn) buzzerOffBtn.addEventListener('click', () => sendBuzzerCommand('off'));
+    const buzzerPulseBtn = document.getElementById('buzzer-pulse-btn');
+    if (buzzerPulseBtn) buzzerPulseBtn.addEventListener('click', () => sendBuzzerCommand('pulse'));
+
+    const gpioForm = document.getElementById('gpio-command-form');
+    if (gpioForm) gpioForm.addEventListener('submit', handleGpioSubmit);
+
+    const debugForm = document.getElementById('debug-command-form');
+    if (debugForm) debugForm.addEventListener('submit', handleDebugCommand);
+
+    const debugClear = document.getElementById('debug-command-clear');
+    if (debugClear) {
+        debugClear.addEventListener('click', () => {
+            const input = document.getElementById('debug-command-input');
+            if (input) input.value = '';
+            updateDebugLastResponse(null);
+        });
+    }
+
+    debugInitialized = true;
+}
+
+function updateDebugDeviceOptions() {
+    const select = document.getElementById('debug-device-select');
+    if (!select) return;
+
+    const previous = select.value;
+    const options = ['<option value="">디바이스를 선택해주세요</option>'];
+
+    (devices || []).forEach(device => {
+        const id = resolveDeviceId(device);
+        if (!id) return;
+        const selected = previous && previous === id ? ' selected' : '';
+        const label = escapeHtml(device.name || id);
+        const status = device.connected ? '온라인' : '오프라인';
+        options.push(`<option value="${escapeHtml(id)}"${selected}>${label} · ${status}</option>`);
+    });
+
+    select.innerHTML = options.join('');
+    if (previous) {
+        select.value = previous;
+    }
+    if (!select.value && devices && devices.length > 0) {
+        const firstId = resolveDeviceId(devices[0]);
+        if (firstId) {
+            select.value = firstId;
+        }
+    }
+
+    updateDebugDeviceInfo();
+}
+
+function updateDebugDeviceInfo() {
+    const info = document.getElementById('debug-device-info');
+    if (!info) return;
+
+    const select = document.getElementById('debug-device-select');
+    const selectedId = select ? select.value : '';
+    if (!selectedId) {
+        info.innerHTML = '디바이스를 선택하면 최신 상태와 센서 데이터를 확인할 수 있습니다.';
+        updateDebugLastResponse(null);
+        return;
+    }
+
+    const device = (devices || []).find(item => resolveDeviceId(item) === selectedId);
+    if (!device) {
+        info.innerHTML = '선택한 디바이스 정보를 찾을 수 없습니다.';
+        updateDebugLastResponse(null);
+        return;
+    }
+
+    const lastData = device.last_data || {};
+    const stateMeta = resolveStateMeta(lastData.state || 'OPEN');
+    const connectionLabel = device.connected ? '연결됨' : '연결 대기';
+    const connectionClass = device.connected ? 'chip online' : 'chip offline';
+    const address = device.address ? escapeHtml(device.address) : '정보 없음';
+    const name = escapeHtml(device.name || resolveDeviceId(device) || '알 수 없음');
+    const employeeName = lastData.employee_name || device.employee_name || '';
+    const subtitle = employeeName
+        ? `담당자: ${escapeHtml(employeeName)}`
+        : `주소: ${address}`;
+
+    let distanceText = '-';
+    if (typeof lastData.distance !== 'undefined' && lastData.distance !== null) {
+        distanceText = lastData.distance === 'ERR' ? '센서 오류' : `${lastData.distance}mm`;
+    }
+
+    const diffText = typeof lastData.diff === 'number' ? lastData.diff : (lastData.diff ?? '-');
+    const timestamp = lastData.timestamp ? formatKST(lastData.timestamp) : '데이터 없음';
+
+    info.innerHTML = `
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap: wrap;">
+            <strong style="font-size:15px; letter-spacing:0.3px;">${name}</strong>
+            <span class="${connectionClass}">${connectionLabel}</span>
+        </div>
+        <div style="margin-top:6px; font-size:12px; color: var(--text-secondary);">${subtitle}</div>
+        <div style="margin-top:10px;">상태: <strong>${stateMeta.text}</strong></div>
+        <div style="margin-top:4px;">거리: ${distanceText} · Δ: ${diffText}</div>
+        <div style="margin-top:4px;">최근 수신: ${timestamp}</div>
+    `;
+}
+
+function getSelectedDebugDeviceId() {
+    const select = document.getElementById('debug-device-select');
+    if (!select || !select.value) {
+        showNotification('제어할 디바이스를 선택해주세요.', 'warning');
+        return null;
+    }
+    return select.value;
+}
+
+function updateDebugLastResponse(payload, success = true) {
+    const el = document.getElementById('debug-last-response');
+    if (!el) return;
+
+    if (!payload) {
+        el.className = 'debug-response';
+        el.textContent = '';
+        return;
+    }
+
+    const timestamp = formatKST(new Date());
+    if (success) {
+        const message = payload.message ? escapeHtml(payload.message) : '명령이 전송되었습니다.';
+        const command = payload.command ? ` · ${escapeHtml(payload.command)}` : '';
+        el.className = 'debug-response success';
+        el.innerHTML = `${message}${command} · ${timestamp}`;
+    } else {
+        const errorMsg = payload.error ? escapeHtml(payload.error) : '명령 전송에 실패했습니다.';
+        el.className = 'debug-response error';
+        el.innerHTML = `${errorMsg} · ${timestamp}`;
+    }
+}
+
+async function postDeviceCommand(deviceId, endpoint, payload, successMessage) {
+    if (!deviceId) return;
+    try {
+        const res = await fetch(`/api/devices/${deviceId}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        let data = {};
+        try {
+            data = await res.json();
+        } catch (error) {
+            data = {};
+        }
+
+        if (res.ok) {
+            const message = successMessage || data.message || '명령을 전송했습니다.';
+            showNotification(message, 'success');
+            updateDebugLastResponse(data, true);
+            setTimeout(() => loadDevices(), 800);
+        } else {
+            const errorMsg = data.error || '명령 전송에 실패했습니다.';
+            showNotification(errorMsg, 'danger');
+            updateDebugLastResponse(data, false);
+        }
+    } catch (error) {
+        console.error('Failed to send command:', error);
+        showNotification('명령 전송 중 오류가 발생했습니다.', 'danger');
+        updateDebugLastResponse({ error: error.message }, false);
+    }
+}
+
+async function sendRelayCommand(mode) {
+    const deviceId = getSelectedDebugDeviceId();
+    if (!deviceId) return;
+
+    const payload = { mode };
+    if (mode === 'pulse') {
+        const durationField = document.getElementById('relay-pulse-duration');
+        const value = durationField ? Number(durationField.value) : NaN;
+        if (!Number.isNaN(value) && value > 0) {
+            payload.duration_ms = value;
+        }
+    }
+
+    await postDeviceCommand(deviceId, '/relay', payload, '릴레이 명령을 전송했습니다.');
+}
+
+async function sendBuzzerCommand(mode) {
+    const deviceId = getSelectedDebugDeviceId();
+    if (!deviceId) return;
+
+    const payload = { mode };
+    const freqField = document.getElementById('buzzer-frequency');
+    const freqValue = freqField ? Number(freqField.value) : NaN;
+    if (!Number.isNaN(freqValue) && freqValue > 0) {
+        payload.frequency_hz = freqValue;
+    }
+
+    if (mode === 'pulse') {
+        const durationField = document.getElementById('buzzer-pulse-duration');
+        const durationValue = durationField ? Number(durationField.value) : NaN;
+        if (!Number.isNaN(durationValue) && durationValue > 0) {
+            payload.duration_ms = durationValue;
+        }
+    }
+
+    await postDeviceCommand(deviceId, '/buzzer', payload, '부저 명령을 전송했습니다.');
+}
+
+async function handleGpioSubmit(event) {
+    event.preventDefault();
+    const deviceId = getSelectedDebugDeviceId();
+    if (!deviceId) return;
+
+    const pinField = document.getElementById('gpio-pin');
+    const stateField = document.getElementById('gpio-state');
+    const durationField = document.getElementById('gpio-duration');
+
+    const pinValue = pinField ? Number(pinField.value) : NaN;
+    if (Number.isNaN(pinValue)) {
+        showNotification('유효한 GPIO 번호를 입력하세요.', 'danger');
+        return;
+    }
+
+    const payload = {
+        pin: pinValue,
+        state: stateField ? stateField.value : 'HIGH'
+    };
+
+    if (durationField) {
+        const durationValue = Number(durationField.value);
+        if (!Number.isNaN(durationValue) && durationValue > 0) {
+            payload.duration_ms = durationValue;
+        }
+    }
+
+    await postDeviceCommand(deviceId, '/gpio', payload, 'GPIO 명령을 전송했습니다.');
+}
+
+async function handleDebugCommand(event) {
+    event.preventDefault();
+    const deviceId = getSelectedDebugDeviceId();
+    if (!deviceId) return;
+
+    const input = document.getElementById('debug-command-input');
+    const command = input ? input.value.trim() : '';
+    if (!command) {
+        showNotification('전송할 명령을 입력해주세요.', 'warning');
+        return;
+    }
+
+    await postDeviceCommand(deviceId, '/command', { command }, '명령을 전송했습니다.');
 }
 
 // 착용 정책 관리

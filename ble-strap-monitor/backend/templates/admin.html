@@ -340,6 +340,29 @@
             animation: fadeUp 0.4s ease;
         }
 
+        .debug-grid {
+            display: grid;
+            gap: 20px;
+        }
+
+        .debug-grid.two {
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        }
+
+        .debug-response {
+            margin-top: 12px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .debug-response.success {
+            color: var(--success);
+        }
+
+        .debug-response.error {
+            color: var(--danger);
+        }
+
         @keyframes fadeUp {
             from { opacity: 0; transform: translateY(16px); }
             to { opacity: 1; transform: translateY(0); }
@@ -1055,6 +1078,10 @@
                 <span>📟</span>
                 <span class="bubble-label">디바이스 현황</span>
             </a>
+            <a class="nav-link" data-page="debug">
+                <span>🛠</span>
+                <span class="bubble-label">디버그 제어</span>
+            </a>
             <a class="nav-link" data-page="logs">
                 <span>📝</span>
                 <span class="bubble-label">이력 조회</span>
@@ -1205,6 +1232,112 @@
                         <h2 class="card-title">스캔 결과</h2>
                     </div>
                     <div id="scan-results"></div>
+                </div>
+            </section>
+
+            <section class="page" id="debug-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">디바이스 선택</h2>
+                        <button class="btn btn-sm" type="button" onclick="loadDevices()">새로 고침</button>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="debug-device-select">제어 대상 디바이스</label>
+                        <select class="form-control" id="debug-device-select">
+                            <option value="">디바이스를 선택해주세요</option>
+                        </select>
+                    </div>
+                    <div id="debug-device-info" style="font-size: 13px; color: var(--text-secondary); line-height: 1.6;">
+                        디바이스를 선택하면 최신 상태와 센서 데이터를 확인할 수 있습니다.
+                    </div>
+                    <div id="debug-last-response" class="debug-response"></div>
+                </div>
+
+                <div class="debug-grid two">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">릴레이 제어</h2>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="relay-pulse-duration">펄스 길이 (ms)</label>
+                            <input type="number" class="form-control" id="relay-pulse-duration" min="20" max="5000" step="10" value="200">
+                        </div>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <button class="btn btn-primary" type="button" id="relay-on-btn">릴레이 ON</button>
+                            <button class="btn" type="button" id="relay-off-btn">릴레이 OFF</button>
+                            <button class="btn btn-warning" type="button" id="relay-pulse-btn">펄스 출력</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">부저 제어</h2>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="buzzer-frequency">주파수 (Hz)</label>
+                            <input type="number" class="form-control" id="buzzer-frequency" min="100" max="8000" step="50" placeholder="2000">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="buzzer-pulse-duration">펄스 길이 (ms)</label>
+                            <input type="number" class="form-control" id="buzzer-pulse-duration" min="20" max="4000" step="10" value="180">
+                        </div>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <button class="btn btn-primary" type="button" id="buzzer-beep-btn">짧은 비프</button>
+                            <button class="btn" type="button" id="buzzer-on-btn">지속음 ON</button>
+                            <button class="btn" type="button" id="buzzer-off-btn">지속음 OFF</button>
+                            <button class="btn btn-warning" type="button" id="buzzer-pulse-btn">펄스 출력</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="debug-grid two">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">임의 GPIO 제어</h2>
+                        </div>
+                        <form id="gpio-command-form" style="display: flex; flex-direction: column; gap: 14px;">
+                            <div class="form-group">
+                                <label class="form-label" for="gpio-pin">GPIO 번호</label>
+                                <input type="number" class="form-control" id="gpio-pin" min="0" max="39" required>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="gpio-state">출력 상태</label>
+                                <select class="form-control" id="gpio-state">
+                                    <option value="HIGH">HIGH / ON</option>
+                                    <option value="LOW">LOW / OFF</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="gpio-duration">유지 시간 (ms, 선택)</label>
+                                <input type="number" class="form-control" id="gpio-duration" min="0" max="10000" step="10" placeholder="0 (지속 유지)">
+                            </div>
+                            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                                <button class="btn btn-primary" type="submit">GPIO 전송</button>
+                            </div>
+                        </form>
+                        <p style="margin-top: 10px; font-size: 12px; color: var(--text-secondary);">
+                            센서, 릴레이, 부저에 연결된 핀은 자동으로 차단됩니다.
+                        </p>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">직접 명령</h2>
+                        </div>
+                        <form id="debug-command-form" style="display: flex; flex-direction: column; gap: 12px;">
+                            <div class="form-group">
+                                <label class="form-label" for="debug-command-input">BLE 명령 문자열</label>
+                                <input type="text" class="form-control" id="debug-command-input" placeholder="예: STATE 또는 RELAY:ON" required>
+                            </div>
+                            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                                <button class="btn" type="button" id="debug-command-clear">초기화</button>
+                                <button class="btn btn-primary" type="submit">명령 전송</button>
+                            </div>
+                        </form>
+                        <p style="margin-top: 10px; font-size: 12px; color: var(--text-secondary);">
+                            입력한 명령은 즉시 BLE 쓰기 특성으로 전송됩니다.
+                        </p>
+                    </div>
                 </div>
             </section>
 

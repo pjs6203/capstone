@@ -436,6 +436,13 @@ class DeviceManager:
                     'state': match.group('state'),
                 }
                 self.last_data = parsed_data
+
+                # 글로벌 캐시에 최근 데이터 반영 (프론트엔드 목록 동기화용)
+                with devices_lock:
+                    entry = registered_devices.get(self.device_id)
+                    if isinstance(entry, dict):
+                        entry['last_data'] = parsed_data
+                        entry['connected'] = True
                 
                 # 이벤트 로그 기록
                 self._log_sensor_data(parsed_data)
@@ -558,6 +565,10 @@ class DeviceManager:
         """백그라운드 루프 정지 요청"""
         self._stop_requested = True
         self.connected = False
+        with devices_lock:
+            entry = registered_devices.get(self.device_id)
+            if isinstance(entry, dict):
+                entry['connected'] = False
         if self.loop and self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)
 
@@ -591,6 +602,11 @@ class DeviceManager:
                 
                 await self.client.connect()
                 self.connected = True
+
+                with devices_lock:
+                    entry = registered_devices.get(self.device_id)
+                    if isinstance(entry, dict):
+                        entry['connected'] = True
                 
                 # 연결 성공 상태 전송
                 socketio.emit('device_status', {
@@ -637,6 +653,10 @@ class DeviceManager:
                     if not self.client.is_connected:
                         reconnect_needed = True
                         self.connected = False
+                        with devices_lock:
+                            entry = registered_devices.get(self.device_id)
+                            if isinstance(entry, dict):
+                                entry['connected'] = False
                         logger.warning(f"[{self.device_id}] Connection lost, attempting reconnect...")
                         socketio.emit('device_status', {
                             'device_id': self.device_id,
@@ -669,6 +689,10 @@ class DeviceManager:
                 error_msg = f"연결 시간 초과 (15초)"
                 logger.error(f"[{self.device_id}] {error_msg}")
                 self.connected = False
+                with devices_lock:
+                    entry = registered_devices.get(self.device_id)
+                    if isinstance(entry, dict):
+                        entry['connected'] = False
                 
                 socketio.emit('device_status', {
                     'device_id': self.device_id,
@@ -693,6 +717,10 @@ class DeviceManager:
                 error_msg = str(e)
                 logger.error(f"[{self.device_id}] Connection error (Attempt {attempt + 1}): {e}")
                 self.connected = False
+                with devices_lock:
+                    entry = registered_devices.get(self.device_id)
+                    if isinstance(entry, dict):
+                        entry['connected'] = False
                 if self._stop_requested:
                     break
                 
@@ -730,6 +758,10 @@ class DeviceManager:
     async def disconnect(self):
         """디바이스 연결 해제"""
         self.connected = False
+        with devices_lock:
+            entry = registered_devices.get(self.device_id)
+            if isinstance(entry, dict):
+                entry['connected'] = False
         if self.client:
             try:
                 await self.client.stop_notify(STRAP_NOTIFY_UUID)
@@ -755,6 +787,61 @@ class DeviceManager:
         except Exception as e:
             logger.error(f"[{self.device_id}] Command error: {e}")
             raise
+
+
+# ============= 공통 유틸리티 =============
+
+def _resolve_manager(device_id):
+    with devices_lock:
+        device = registered_devices.get(device_id)
+        if not device:
+            return None, None
+        return device, device.get('manager')
+
+
+def _dispatch_ble_command(manager, command, timeout=10):
+    loop = getattr(manager, 'loop', None)
+    if not loop or not loop.is_running():
+        raise RuntimeError('loop_inactive')
+
+    future = asyncio.run_coroutine_threadsafe(manager.send_command(command), loop)
+    try:
+        future.result(timeout=timeout)
+        return True
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        raise TimeoutError('timeout') from exc
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _coerce_int(value, default=None):
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _send_command_response(manager, command, extra=None):
+    try:
+        _dispatch_ble_command(manager, command)
+        payload = {'success': True, 'command': command}
+        if isinstance(extra, dict):
+            payload.update(extra)
+        return jsonify(payload)
+    except TimeoutError:
+        return jsonify({'error': '명령 전송 시간이 초과되었습니다.'}), 504
+    except Exception as exc:
+        message = str(exc)
+        if message == 'loop_inactive':
+            return jsonify({'error': '디바이스 연결 루프가 활성화되지 않았습니다.'}), 503
+        return jsonify({'error': message}), 500
+
+
+def _clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
 
 
 # ============= 인증 데코레이터 =============
@@ -915,7 +1002,8 @@ def get_devices():
             except Exception as exc:
                 logger.error(f"Failed to fetch employee for {device_id}: {exc}")
 
-            last_data = device['manager'].last_data if 'manager' in device else None
+            manager = device.get('manager')
+            last_data = device.get('last_data') or (manager.last_data if manager else None)
             if last_data and employee_name and not last_data.get('employee_name'):
                 last_data = dict(last_data)
                 last_data['employee_name'] = employee_name
@@ -924,7 +1012,7 @@ def get_devices():
                 'id': device_id,
                 'address': device['address'],
                 'name': device['name'],
-                'connected': device['manager'].connected if 'manager' in device else False,
+                'connected': device.get('connected', manager.connected if manager else False),
                 'employee_name': employee_name,
                 'last_data': last_data
             })
@@ -955,7 +1043,9 @@ def register_device():
         registered_devices[device_id] = {
             'address': address,
             'name': name,
-            'manager': manager
+            'manager': manager,
+            'connected': False,
+            'last_data': None
         }
     
     # DB에 저장
@@ -1044,31 +1134,141 @@ def unregister_device(device_id):
 @app.route('/api/devices/<device_id>/command', methods=['POST'])
 def send_device_command(device_id):
     """디바이스에 명령 전송"""
-    with devices_lock:
-        if device_id not in registered_devices:
-            return jsonify({'error': 'Device not found'}), 404
-        
-        manager = registered_devices[device_id].get('manager')
-        if not manager:
-            return jsonify({'error': 'Device manager not initialized'}), 500
-    
+    device, manager = _resolve_manager(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    if not manager:
+        return jsonify({'error': 'Device manager not initialized'}), 500
+
     command = request.json.get('command')
     if not command:
         return jsonify({'error': 'Command required'}), 400
-    
-    loop = getattr(manager, 'loop', None)
-    if not loop or not loop.is_running():
-        return jsonify({'error': '디바이스 연결 루프가 활성화되지 않았습니다.'}), 503
+    return _send_command_response(manager, command, {'message': 'Command sent'})
 
-    future = asyncio.run_coroutine_threadsafe(manager.send_command(command), loop)
-    try:
-        future.result(timeout=10)
-        return jsonify({'message': 'Command sent', 'command': command})
-    except concurrent.futures.TimeoutError:
-        future.cancel()
-        return jsonify({'error': '명령 전송 시간이 초과되었습니다.'}), 504
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/devices/<device_id>/relay', methods=['POST'])
+@login_required
+def api_control_relay(device_id):
+    device, manager = _resolve_manager(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    if not manager:
+        return jsonify({'error': 'Device manager not initialized'}), 500
+
+    payload = request.json or {}
+    mode = str(payload.get('mode') or payload.get('state') or '').strip().lower()
+    if mode not in {'on', 'off', 'pulse'}:
+        return jsonify({'error': 'mode 값은 on, off, pulse 중 하나여야 합니다.'}), 400
+
+    if mode == 'on':
+        command = 'RELAY:ON'
+    elif mode == 'off':
+        command = 'RELAY:OFF'
+    else:
+        duration = _coerce_int(payload.get('duration_ms'), None)
+        if duration is None:
+            duration = _coerce_int(payload.get('duration'), None)
+        if duration is None:
+            duration = _coerce_int(payload.get('pulse_ms'), 200)
+        duration = _clamp(duration or 200, 20, 5000)
+        command = f'RELAY:PULSE:{duration}'
+
+    return _send_command_response(manager, command, {
+        'message': 'Relay command dispatched',
+        'target': 'relay',
+        'mode': mode
+    })
+
+
+@app.route('/api/devices/<device_id>/buzzer', methods=['POST'])
+@login_required
+def api_control_buzzer(device_id):
+    device, manager = _resolve_manager(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    if not manager:
+        return jsonify({'error': 'Device manager not initialized'}), 500
+
+    payload = request.json or {}
+    mode = str(payload.get('mode') or payload.get('state') or 'beep').strip().lower()
+    if mode not in {'on', 'off', 'pulse', 'beep'}:
+        return jsonify({'error': 'mode 값은 on, off, pulse, beep 중 하나여야 합니다.'}), 400
+
+    freq = _coerce_int(payload.get('frequency_hz'), None)
+    if freq is None:
+        freq = _coerce_int(payload.get('freq'), None)
+    if freq is not None:
+        freq = _clamp(freq, 100, 8000)
+
+    if mode == 'on':
+        command = f'BUZZER:ON:{freq}' if freq else 'BUZZER:ON'
+    elif mode == 'off':
+        command = 'BUZZER:OFF'
+    elif mode == 'beep':
+        command = 'BEEP'
+    else:
+        duration = _coerce_int(payload.get('duration_ms'), None)
+        if duration is None:
+            duration = _coerce_int(payload.get('duration'), 180)
+        duration = _clamp(duration or 180, 20, 4000)
+        if freq:
+            command = f'BUZZER:PULSE:{duration}:{freq}'
+        else:
+            command = f'BUZZER:PULSE:{duration}'
+
+    extra = {'message': 'Buzzer command dispatched', 'target': 'buzzer', 'mode': mode}
+    if freq:
+        extra['frequency_hz'] = freq
+    return _send_command_response(manager, command, extra)
+
+
+@app.route('/api/devices/<device_id>/gpio', methods=['POST'])
+@login_required
+def api_control_gpio(device_id):
+    device, manager = _resolve_manager(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    if not manager:
+        return jsonify({'error': 'Device manager not initialized'}), 500
+
+    payload = request.json or {}
+    pin = _coerce_int(payload.get('pin'), None)
+    if pin is None:
+        return jsonify({'error': 'pin 값이 필요합니다.'}), 400
+    if pin < 0 or pin > 39:
+        return jsonify({'error': '허용되지 않는 GPIO 번호입니다.'}), 400
+
+    state_token = payload.get('state', payload.get('value'))
+    if state_token is None:
+        return jsonify({'error': 'state 값이 필요합니다.'}), 400
+
+    state_norm = str(state_token).strip().lower()
+    if state_norm in {'1', 'high', 'on', 'true'}:
+        state_word = 'HIGH'
+    elif state_norm in {'0', 'low', 'off', 'false'}:
+        state_word = 'LOW'
+    else:
+        return jsonify({'error': 'state 값은 on/off 또는 high/low 여야 합니다.'}), 400
+
+    duration = _coerce_int(payload.get('duration_ms'), None)
+    if duration is None:
+        duration = _coerce_int(payload.get('duration'), 0)
+    duration = _clamp(duration or 0, 0, 10000)
+
+    command = f'GPIO:{pin}:{state_word}'
+    if duration > 0:
+        command = f'{command}:{duration}'
+
+    extra = {
+        'message': 'GPIO command dispatched',
+        'target': 'gpio',
+        'pin': pin,
+        'state': state_word
+    }
+    if duration > 0:
+        extra['duration_ms'] = duration
+
+    return _send_command_response(manager, command, extra)
 
 
 @app.route('/api/devices/<device_id>/reconnect', methods=['POST'])
@@ -1452,4 +1652,4 @@ if __name__ == '__main__':
     # DB에서 등록된 기기 자동 로드
     load_devices_from_db()
     
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
