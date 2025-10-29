@@ -18,14 +18,16 @@
 #include <BLEUtils.h>
 #include <BLEServer.h>
 
+
+
 const int SDA_PIN      = 4;
 const int SCL_PIN      = 5;
 const int HALL_ADC_PIN = 7;
 const int BUZZER_PIN   = 10;  // 하드웨어에 맞게 조정 (Flash 핀과 충돌하지 않는 GPIO 권장)
 const bool BUZZER_USE_TONE = true;          // 수동형(피에조) 버저면 true, 능동형이면 false
 const bool BUZZER_ACTIVE_HIGH = true;       // BUZZER_USE_TONE=false 일 때 HIGH로 켜지면 true, LOW로 켜지면 false
-const int RELAY_PIN    = 23; // 필요 시 하드웨어 구성에 맞게 변경
-const bool RELAY_ACTIVE_HIGH = false; // 릴레이 모듈이 HIGH에서 동작하면 true
+const int RELAY_PIN    = 18; // 필요 시 하드웨어 구성에 맞게 변경
+const bool RELAY_ACTIVE_HIGH = true; // 릴레이 모듈이 HIGH에서 동작하면 true
 
 const uint16_t DEFAULT_BUZZER_FREQ = 2000;
 
@@ -89,7 +91,7 @@ void startCalibration(); // fwd
 void sendData(bool force);
 void handleRelayCommand(const String& rawArg);
 void handleBuzzerCommand(const String& rawArg);
-void handleGpioCommand(const String& rawArg);
+void handleGpioCommand(const String& rawArg, bool force = false);
 bool isSafeGpio(int pinNumber);
 void setRelayState(bool enabled);
 void applyBuzzerOutput(bool enabled, uint16_t freq = DEFAULT_BUZZER_FREQ);
@@ -102,33 +104,49 @@ class StrapWriteCallbacks : public BLECharacteristicCallbacks {
     // 일부 BLE 라이브러리 변형에서 getValue() 가 Arduino String 을 반환하므로 String 사용
     String v = c->getValue();
     if(!v.length()) return;
+
+    // 입력값 정리: 앞뒤 공백/개행 제거, 내부 제어문자 제거
+    // 일부 클라이언트는 '\r'이나 '\n'을 붙여 전송하므로 이를 제거해야 정확히 매칭됩니다.
+    // String::endsWith()는 char 인수를 받지 않으므로 charAt()로 마지막 문자를 검사합니다.
+    while (v.length() > 0 && (v.charAt(v.length() - 1) == '\n' || v.charAt(v.length() - 1) == '\r')) {
+      v.remove(v.length() - 1);
+    }
+    v.trim();
+
     Serial.print("[CMD] "); Serial.println(v);
 
-    if(v.startsWith("RATE:")){
+    // 대소문자 구분 없이 매칭하기 위한 Upper 버전
+    String U = v;
+    U.toUpperCase();
+
+    if(U.startsWith("RATE:")){
       uint32_t nv = v.substring(5).toInt();
       measureIntervalMs = clampRate(nv);
       snprintf(g_notifyBuf,sizeof(g_notifyBuf),"RESP:RATE=%lu",(unsigned long)measureIntervalMs);
-    } else if(v == "ONCE") {
+    } else if(U == "ONCE") {
       // 기존 g_notifyBuf 에 마지막 데이터가 들어있다고 가정; 즉시 전송
       sendData(true);
       return;
-    } else if(v == "CAL") {
+    } else if(U == "CAL") {
       startCalibration();
       snprintf(g_notifyBuf,sizeof(g_notifyBuf),"RESP:CAL-OK");
-    } else if(v == "BEEP") {
+    } else if(U == "BEEP") {
       applyBuzzerOutput(true, DEFAULT_BUZZER_FREQ);
       delay(120);
       applyBuzzerOutput(false);
       snprintf(g_notifyBuf,sizeof(g_notifyBuf),"RESP:BEEP");
-    } else if(v == "STATE") {
+    } else if(U == "STATE") {
       snprintf(g_notifyBuf,sizeof(g_notifyBuf),"RESP:STATE=%s", stateNow==STRAP_OPEN?"OPEN":"CLOSED");
-    } else if(v.startsWith("RELAY:")) {
+    } else if(U.startsWith("RELAY:")) {
       handleRelayCommand(v.substring(6));
-    } else if(v.startsWith("BUZZER:")) {
+    } else if(U.startsWith("BUZZER:")) {
       handleBuzzerCommand(v.substring(7));
-    } else if(v.startsWith("GPIO:")) {
-      handleGpioCommand(v.substring(5));
-    } else if(v.startsWith("POLICY:")) {
+    } else if(U.startsWith("GPIOF:")) {
+      // Forced GPIO (bypass safe-pin check when firmware supports it)
+      handleGpioCommand(v.substring(6), true);
+    } else if(U.startsWith("GPIO:")) {
+      handleGpioCommand(v.substring(5), false);
+    } else if(U.startsWith("POLICY:")) {
       String payload = v.substring(7);
       payload.trim();
       WearPolicyConfig newPolicy = wearPolicy;
@@ -318,7 +336,7 @@ void handleBuzzerCommand(const String& rawArg) {
   }
 }
 
-void handleGpioCommand(const String& rawArg) {
+void handleGpioCommand(const String& rawArg, bool force) {
   String arg = rawArg;
   arg.trim();
   int first = arg.indexOf(':');
@@ -348,19 +366,33 @@ void handleGpioCommand(const String& rawArg) {
     duration = parseDurationToken(durationToken, 0, 0, 10000);
   }
 
-  if (!isSafeGpio(pin)) {
+  if (!force && !isSafeGpio(pin)) {
     snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:GPIO=ERR,PIN");
     return;
   }
+
+  // 읽기 전 상태(복원용)를 먼저 읽어둡니다. pinMode 변경 전 digitalRead로 값 획득.
+  int prevLevel = digitalRead(pin); // 0 또는 1
 
   pinMode(pin, OUTPUT);
   digitalWrite(pin, driveHigh ? HIGH : LOW);
 
   if (duration > 0) {
+    // 요청된 시간만큼 유지
     delay(duration);
-    digitalWrite(pin, LOW);
-    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:GPIO=%d,%s,%lu", pin, driveHigh ? "HIGH" : "LOW", static_cast<unsigned long>(duration));
+
+    // 유지 시간 후, 가능한 경우 이전 레벨로 복원
+    bool restoredHigh = (prevLevel != 0);
+    digitalWrite(pin, restoredHigh ? HIGH : LOW);
+
+    // 최종 상태 정보를 포함한 응답
+    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:GPIO=%d,%s,%lu,FINAL=%s",
+             pin,
+             driveHigh ? "HIGH" : "LOW",
+             static_cast<unsigned long>(duration),
+             restoredHigh ? "HIGH" : "LOW");
   } else {
+    // 지속 유지 (복귀 없음)
     snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:GPIO=%d,%s", pin, driveHigh ? "HIGH" : "LOW");
   }
 }
@@ -512,6 +544,7 @@ void setup() {
   lastMeasureMs = millis();
   Serial.println("[INFO] Calibration done. Running main loop...");
   setupBLE();
+  
 }
 
 void loop() {
@@ -539,55 +572,31 @@ void loop() {
     Serial.print(" base_no="); Serial.print(baseline_no_mag);
     Serial.print(" delta="); Serial.print(hallOffset);
     Serial.print(" |d|="); Serial.print(diff);
+    Serial.print(" Buzzer = "); Serial.print(buzzerLatched);
+    Serial.print(" Relay = "); Serial.print(relayLatched);
     if (!calib_done) Serial.print("  [CAL_NOT_DONE]");
     Serial.println();
 
-    // 상태 판정 (자동 임계값 사용)
+    // 상태 판정: 사용자 요청에 따라 "착용"은 홀센서 평균값 <= 500 AND
+    // 거리센서가 유효하고 거리가 닫힘(wearPolicy.distanceClose) 조건을 만족할 때만으로 정의합니다.
+    // 두 조건 중 하나라도 만족하지 않으면 미착용(OPEN)으로 처리합니다.
     StrapState target = stateNow;
-    bool hallSuggestClosed = false;
-    bool hallSuggestOpen = false;
-    if (calib_done) {
-      if (hallMagDecreases) {
-        hallSuggestClosed = hallOffset <= -((int32_t)THRESH_CLOSE_COUNTS);
-        hallSuggestOpen   = hallOffset >= -((int32_t)THRESH_OPEN_COUNTS);
-      } else {
-        hallSuggestClosed = hallOffset >= (int32_t)THRESH_CLOSE_COUNTS;
-        hallSuggestOpen   = hallOffset <= (int32_t)THRESH_OPEN_COUNTS;
-      }
-    } else {
-      // fallback: 보수적 임계값
-      hallSuggestClosed = diff >= 300;
-      hallSuggestOpen   = diff <= 50;
-    }
 
+    // 홀센서 기준: 이동평균값(avg) 사용. 사용자가 지정한 임계값 500 이하일 때 "홀센서 조건 충족"
+    bool hallCondition = (avg <= 500);
+
+    // 거리센서 기준: 거리측정이 유효하고 wearPolicy.distanceClose 이하일 때 "거리 조건 충족"
     bool distanceValid = (dist != 0xFFFF);
-    bool distanceSuggestClosed = false;
-    bool distanceSuggestOpen = false;
+    bool distanceCondition = false;
     if (wearPolicy.distanceEnabled && distanceValid) {
-      distanceSuggestClosed = dist <= wearPolicy.distanceClose;
-      distanceSuggestOpen   = dist >= wearPolicy.distanceOpen;
+      distanceCondition = (dist <= wearPolicy.distanceClose);
     }
 
-    if (stateNow == STRAP_OPEN) {
-      bool closeCond = hallSuggestClosed;
-      if (wearPolicy.distanceEnabled) {
-        closeCond = closeCond && (distanceValid ? distanceSuggestClosed : false);
-      }
-      if (closeCond) {
-        target = STRAP_CLOSED;
-      }
+    // 최종: 둘 다 충족하면 착용(STRAP_CLOSED), 아니면 미착용(STRAP_OPEN)
+    if (hallCondition && distanceCondition) {
+      target = STRAP_CLOSED;
     } else {
-      bool openCond = hallSuggestOpen;
-      if (wearPolicy.distanceEnabled) {
-        if (!distanceValid) {
-          openCond = true; // 거리 정보 없으면 안전하게 OPEN
-        } else {
-          openCond = openCond || distanceSuggestOpen;
-        }
-      }
-      if (openCond) {
-        target = STRAP_OPEN;
-      }
+      target = STRAP_OPEN;
     }
 
     static StrapState pending = STRAP_OPEN;

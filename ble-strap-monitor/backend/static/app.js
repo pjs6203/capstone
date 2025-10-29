@@ -1625,6 +1625,20 @@ async function handleGpioSubmit(event) {
         state: stateField ? stateField.value : 'HIGH'
     };
 
+    // 강제 제어(unsafe) 옵션 - 펌웨어에서 기본적으로 차단하는 핀(예: I2C, HALL, BUZZER, RELAY)
+    // 안전을 위해 UI에서 해당 핀을 전송할 때 사용자가 확인하도록 강제 플래그를 자동으로 설정하고
+    // 알림을 표시합니다. 서버는 이미 force 플래그를 받으면 GPIOF: 접두사로 전송합니다.
+    const protectedPins = [4, 5, 7, 10, 18]; // SDA, SCL, HALL_ADC_PIN, BUZZER_PIN, RELAY_PIN
+    const forceCheckbox = document.getElementById('gpio-force');
+    if (protectedPins.includes(pinValue)) {
+        payload.force = true;
+        // reflect in UI checkbox if present
+        if (forceCheckbox) forceCheckbox.checked = true;
+        showNotification('주의: 선택한 핀은 디바이스에서 기본적으로 차단됩니다. 강제 제어(GPIOF)로 전송합니다.', 'warning');
+    } else {
+        if (forceCheckbox) payload.force = !!forceCheckbox.checked;
+    }
+
     if (durationField) {
         const durationValue = Number(durationField.value);
         if (!Number.isNaN(durationValue) && durationValue > 0) {

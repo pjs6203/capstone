@@ -1255,7 +1255,10 @@ def api_control_gpio(device_id):
         duration = _coerce_int(payload.get('duration'), 0)
     duration = _clamp(duration or 0, 0, 10000)
 
-    command = f'GPIO:{pin}:{state_word}'
+    # allow force override from debug UI (bypass firmware-side safe-pin checks if supported)
+    force = bool(payload.get('force'))
+    prefix = 'GPIOF' if force else 'GPIO'
+    command = f'{prefix}:{pin}:{state_word}'
     if duration > 0:
         command = f'{command}:{duration}'
 

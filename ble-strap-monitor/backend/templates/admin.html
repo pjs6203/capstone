@@ -870,6 +870,13 @@
             position: absolute;
             inset: 0;
             opacity: 0.16;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .notification-card > * {
+            position: relative;
+            z-index: 1;
         }
 
         .notification-card.warning::before { background: linear-gradient(135deg, rgba(250, 204, 21, 0.65), transparent); }
@@ -1310,6 +1317,11 @@
                             <div class="form-group">
                                 <label class="form-label" for="gpio-duration">유지 시간 (ms, 선택)</label>
                                 <input type="number" class="form-control" id="gpio-duration" min="0" max="10000" step="10" placeholder="0 (지속 유지)">
+                            </div>
+                            <div class="form-group">
+                                <label style="display:inline-flex; align-items:center; gap:8px; font-size:13px; color:var(--text-secondary);">
+                                    <input type="checkbox" id="gpio-force" style="width:16px; height:16px;"> 강제 제어 (위험 핀 허용)
+                                </label>
                             </div>
                             <div style="display: flex; justify-content: flex-end; gap: 10px;">
                                 <button class="btn btn-primary" type="submit">GPIO 전송</button>
