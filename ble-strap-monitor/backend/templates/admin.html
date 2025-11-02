@@ -870,13 +870,6 @@
             position: absolute;
             inset: 0;
             opacity: 0.16;
-            pointer-events: none;
-            z-index: 0;
-        }
-
-        .notification-card > * {
-            position: relative;
-            z-index: 1;
         }
 
         .notification-card.warning::before { background: linear-gradient(135deg, rgba(250, 204, 21, 0.65), transparent); }
@@ -1263,21 +1256,6 @@
                 <div class="debug-grid two">
                     <div class="card">
                         <div class="card-header">
-                            <h2 class="card-title">릴레이 제어</h2>
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label" for="relay-pulse-duration">펄스 길이 (ms)</label>
-                            <input type="number" class="form-control" id="relay-pulse-duration" min="20" max="5000" step="10" value="200">
-                        </div>
-                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                            <button class="btn btn-primary" type="button" id="relay-on-btn">릴레이 ON</button>
-                            <button class="btn" type="button" id="relay-off-btn">릴레이 OFF</button>
-                            <button class="btn btn-warning" type="button" id="relay-pulse-btn">펄스 출력</button>
-                        </div>
-                    </div>
-
-                    <div class="card">
-                        <div class="card-header">
                             <h2 class="card-title">부저 제어</h2>
                         </div>
                         <div class="form-group">
@@ -1318,17 +1296,12 @@
                                 <label class="form-label" for="gpio-duration">유지 시간 (ms, 선택)</label>
                                 <input type="number" class="form-control" id="gpio-duration" min="0" max="10000" step="10" placeholder="0 (지속 유지)">
                             </div>
-                            <div class="form-group">
-                                <label style="display:inline-flex; align-items:center; gap:8px; font-size:13px; color:var(--text-secondary);">
-                                    <input type="checkbox" id="gpio-force" style="width:16px; height:16px;"> 강제 제어 (위험 핀 허용)
-                                </label>
-                            </div>
                             <div style="display: flex; justify-content: flex-end; gap: 10px;">
                                 <button class="btn btn-primary" type="submit">GPIO 전송</button>
                             </div>
                         </form>
                         <p style="margin-top: 10px; font-size: 12px; color: var(--text-secondary);">
-                            센서, 릴레이, 부저에 연결된 핀은 자동으로 차단됩니다.
+                            센서와 부저에 연결된 핀은 자동으로 차단됩니다.
                         </p>
                     </div>
 
@@ -1339,7 +1312,7 @@
                         <form id="debug-command-form" style="display: flex; flex-direction: column; gap: 12px;">
                             <div class="form-group">
                                 <label class="form-label" for="debug-command-input">BLE 명령 문자열</label>
-                                <input type="text" class="form-control" id="debug-command-input" placeholder="예: STATE 또는 RELAY:ON" required>
+                                <input type="text" class="form-control" id="debug-command-input" placeholder="예: STATE 또는 BUZZER:ON" required>
                             </div>
                             <div style="display: flex; justify-content: flex-end; gap: 10px;">
                                 <button class="btn" type="button" id="debug-command-clear">초기화</button>
@@ -1357,13 +1330,15 @@
                 <div class="card">
                     <div class="card-header">
                         <h2 class="card-title">이벤트 로그</h2>
-                        <div style="display: flex; gap: 10px;">
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
                             <select class="form-control" style="width: auto;" id="log-type-filter">
                                 <option value="">전체</option>
                                 <option value="wear_on">착용</option>
                                 <option value="wear_off">미착용</option>
                             </select>
+                            <input type="date" class="form-control" style="width: auto;" id="log-date-input">
                             <button class="btn btn-primary btn-sm" type="button" onclick="loadLogs()">새로고침</button>
+                            <button class="btn btn-secondary btn-sm" type="button" id="log-export-btn">Excel 다운로드</button>
                         </div>
                     </div>
                     <div id="logs-container"></div>

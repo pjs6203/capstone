@@ -93,6 +93,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadInitialData();
     updateCurrentTime(); // 시간 업데이트 시작
     setInterval(updateCurrentTime, 1000); // 매초 업데이트
+    initLogExportControls();
 
     const policyForm = document.getElementById('wear-policy-form');
     if (policyForm) {
@@ -1389,13 +1390,6 @@ function initDebugControls() {
         });
     }
 
-    const relayOnBtn = document.getElementById('relay-on-btn');
-    if (relayOnBtn) relayOnBtn.addEventListener('click', () => sendRelayCommand('on'));
-    const relayOffBtn = document.getElementById('relay-off-btn');
-    if (relayOffBtn) relayOffBtn.addEventListener('click', () => sendRelayCommand('off'));
-    const relayPulseBtn = document.getElementById('relay-pulse-btn');
-    if (relayPulseBtn) relayPulseBtn.addEventListener('click', () => sendRelayCommand('pulse'));
-
     const buzzerBeepBtn = document.getElementById('buzzer-beep-btn');
     if (buzzerBeepBtn) buzzerBeepBtn.addEventListener('click', () => sendBuzzerCommand('beep'));
     const buzzerOnBtn = document.getElementById('buzzer-on-btn');
@@ -1567,22 +1561,6 @@ async function postDeviceCommand(deviceId, endpoint, payload, successMessage) {
     }
 }
 
-async function sendRelayCommand(mode) {
-    const deviceId = getSelectedDebugDeviceId();
-    if (!deviceId) return;
-
-    const payload = { mode };
-    if (mode === 'pulse') {
-        const durationField = document.getElementById('relay-pulse-duration');
-        const value = durationField ? Number(durationField.value) : NaN;
-        if (!Number.isNaN(value) && value > 0) {
-            payload.duration_ms = value;
-        }
-    }
-
-    await postDeviceCommand(deviceId, '/relay', payload, '릴레이 명령을 전송했습니다.');
-}
-
 async function sendBuzzerCommand(mode) {
     const deviceId = getSelectedDebugDeviceId();
     if (!deviceId) return;
@@ -1624,20 +1602,6 @@ async function handleGpioSubmit(event) {
         pin: pinValue,
         state: stateField ? stateField.value : 'HIGH'
     };
-
-    // 강제 제어(unsafe) 옵션 - 펌웨어에서 기본적으로 차단하는 핀(예: I2C, HALL, BUZZER, RELAY)
-    // 안전을 위해 UI에서 해당 핀을 전송할 때 사용자가 확인하도록 강제 플래그를 자동으로 설정하고
-    // 알림을 표시합니다. 서버는 이미 force 플래그를 받으면 GPIOF: 접두사로 전송합니다.
-    const protectedPins = [4, 5, 7, 10, 18]; // SDA, SCL, HALL_ADC_PIN, BUZZER_PIN, RELAY_PIN
-    const forceCheckbox = document.getElementById('gpio-force');
-    if (protectedPins.includes(pinValue)) {
-        payload.force = true;
-        // reflect in UI checkbox if present
-        if (forceCheckbox) forceCheckbox.checked = true;
-        showNotification('주의: 선택한 핀은 디바이스에서 기본적으로 차단됩니다. 강제 제어(GPIOF)로 전송합니다.', 'warning');
-    } else {
-        if (forceCheckbox) payload.force = !!forceCheckbox.checked;
-    }
 
     if (durationField) {
         const durationValue = Number(durationField.value);
@@ -1854,20 +1818,105 @@ async function saveWearPolicy(event) {
     }
 }
 
+function initLogExportControls() {
+    const dateInput = document.getElementById('log-date-input');
+    if (dateInput && !dateInput.value) {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        dateInput.value = `${year}-${month}-${day}`;
+    }
+
+    if (dateInput) {
+        dateInput.addEventListener('change', () => loadLogs());
+    }
+
+    const exportBtn = document.getElementById('log-export-btn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', exportLogs);
+    }
+}
+
+async function exportLogs() {
+    const dateInput = document.getElementById('log-date-input');
+    const targetDate = dateInput ? dateInput.value : '';
+
+    if (!targetDate) {
+        showNotification('엑셀로 내보낼 날짜를 선택해주세요.', 'warning');
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/logs/events/export?date=${encodeURIComponent(targetDate)}`);
+        if (!res.ok) {
+            let message = 'Excel 파일 생성에 실패했습니다.';
+            const contentType = res.headers.get('Content-Type') || '';
+            if (contentType.includes('application/json')) {
+                const body = await res.json().catch(() => ({}));
+                if (body.error) {
+                    message = body.error;
+                }
+            }
+            showNotification(message, 'danger', { autoOpen: true });
+            return;
+        }
+
+        const blob = await res.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        const disposition = res.headers.get('Content-Disposition') || '';
+        let filename = `event_logs_${targetDate}.xlsx`;
+        const match = disposition.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i);
+        if (match && match[1]) {
+            try {
+                filename = decodeURIComponent(match[1]);
+            } catch (error) {
+                filename = match[1];
+            }
+        }
+
+        anchor.href = downloadUrl;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        window.URL.revokeObjectURL(downloadUrl);
+
+        showNotification('지정한 날짜의 로그를 Excel로 다운로드했습니다.', 'success');
+    } catch (error) {
+        console.error('Failed to export logs:', error);
+        showNotification('Excel 다운로드 중 오류가 발생했습니다.', 'danger', { autoOpen: true });
+    }
+}
+
 // 로그 페이지
 async function loadLogs() {
     const typeFilter = document.getElementById('log-type-filter')?.value || '';
+    const dateFilter = document.getElementById('log-date-input')?.value || '';
     
     try {
         let url = '/api/logs/events?limit=100';
         if (typeFilter) {
-            url += `&type=${typeFilter}`;
+            url += `&type=${encodeURIComponent(typeFilter)}`;
         }
-        
+        if (dateFilter) {
+            url += `&date=${encodeURIComponent(dateFilter)}`;
+        }
+
         const res = await fetch(url);
-        const data = await res.json();
-        
         const container = document.getElementById('logs-container');
+
+        if (!res.ok) {
+            const errorBody = await res.json().catch(() => ({}));
+            const message = errorBody.error || '로그를 불러오는 중 오류가 발생했습니다.';
+            if (container) {
+                container.innerHTML = `<p style="color: var(--danger); text-align: center;">${escapeHtml(message)}</p>`;
+            }
+            return;
+        }
+
+        const data = await res.json();
         if (!data.logs || data.logs.length === 0) {
             container.innerHTML = '<p style="color: var(--text-secondary); text-align: center;">로그가 없습니다</p>';
             return;

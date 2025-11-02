@@ -5,10 +5,11 @@ Features: Employee Management, Device Monitoring, Event Logging, Authentication
 """
 import asyncio
 import concurrent.futures
+import io
 import logging
 import hashlib
 import os
-from flask import Flask, jsonify, request, render_template, session, redirect, url_for
+from flask import Flask, jsonify, request, render_template, session, redirect, url_for, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from bleak import BleakScanner, BleakClient
@@ -19,6 +20,7 @@ import time
 import sqlite3
 import json
 from functools import wraps
+from openpyxl import Workbook
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -1255,10 +1257,7 @@ def api_control_gpio(device_id):
         duration = _coerce_int(payload.get('duration'), 0)
     duration = _clamp(duration or 0, 0, 10000)
 
-    # allow force override from debug UI (bypass firmware-side safe-pin checks if supported)
-    force = bool(payload.get('force'))
-    prefix = 'GPIOF' if force else 'GPIO'
-    command = f'{prefix}:{pin}:{state_word}'
+    command = f'GPIO:{pin}:{state_word}'
     if duration > 0:
         command = f'{command}:{duration}'
 
@@ -1438,6 +1437,13 @@ def get_event_logs():
     limit = request.args.get('limit', 100, type=int)
     event_type = request.args.get('type')
     severity = request.args.get('severity')
+    log_date = request.args.get('date')
+
+    if log_date:
+        try:
+            datetime.strptime(log_date, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({'error': '날짜 형식은 YYYY-MM-DD 이어야 합니다.'}), 400
     
     conn = sqlite3.connect('strap_monitor.db')
     conn.row_factory = sqlite3.Row
@@ -1456,6 +1462,10 @@ def get_event_logs():
     if severity:
         query += ' AND el.severity = ?'
         params.append(severity)
+
+    if log_date:
+        query += ' AND date(el.timestamp) = ?'
+        params.append(log_date)
     
     query += ' ORDER BY el.timestamp DESC LIMIT ?'
     params.append(limit)
@@ -1466,6 +1476,81 @@ def get_event_logs():
     
     logs = [dict(row) for row in rows]
     return jsonify({'logs': logs})
+
+
+@app.route('/api/logs/events/export', methods=['GET'])
+@login_required
+def export_event_logs():
+    """지정한 날짜의 이벤트 로그를 엑셀로 내보냄"""
+    date_param = request.args.get('date')
+    if not date_param:
+        return jsonify({'error': 'date 파라미터(YYYY-MM-DD)를 지정해주세요.'}), 400
+
+    try:
+        target_date = datetime.strptime(date_param, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': '날짜 형식은 YYYY-MM-DD 이어야 합니다.'}), 400
+
+    conn = sqlite3.connect('strap_monitor.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute('''
+        SELECT el.timestamp, el.device_id, el.event_type, el.event_data, el.severity,
+               e.name AS employee_name, e.employee_number
+        FROM event_logs el
+        LEFT JOIN employees e ON el.employee_id = e.id
+        WHERE date(el.timestamp) = ?
+        ORDER BY el.timestamp ASC
+    ''', (date_param,))
+    rows = c.fetchall()
+    conn.close()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'EventLogs'
+    ws.append([
+        'Timestamp (KST)',
+        'Device ID',
+        'Employee Name',
+        'Employee Number',
+        'Event Type',
+        'Severity',
+        'Event Data'
+    ])
+
+    for row in rows:
+        event_data = row['event_data'] or ''
+        if event_data:
+            try:
+                parsed = json.loads(event_data)
+                if isinstance(parsed, (dict, list)):
+                    event_data = json.dumps(parsed, ensure_ascii=False)
+                else:
+                    event_data = str(parsed)
+            except Exception:
+                event_data = str(event_data)
+
+        ws.append([
+            to_kst_string(row['timestamp']),
+            row['device_id'],
+            row['employee_name'] or '',
+            row['employee_number'] or '',
+            row['event_type'],
+            row['severity'],
+            event_data
+        ])
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"event_logs_{target_date.isoformat()}.xlsx"
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
 
 
 @app.route('/api/logs/wear-sessions', methods=['GET'])
