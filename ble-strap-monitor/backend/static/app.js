@@ -1399,6 +1399,13 @@ function initDebugControls() {
     const buzzerPulseBtn = document.getElementById('buzzer-pulse-btn');
     if (buzzerPulseBtn) buzzerPulseBtn.addEventListener('click', () => sendBuzzerCommand('pulse'));
 
+    const auxOnBtn = document.getElementById('aux-on-btn');
+    if (auxOnBtn) auxOnBtn.addEventListener('click', () => sendAuxCommand('on'));
+    const auxOffBtn = document.getElementById('aux-off-btn');
+    if (auxOffBtn) auxOffBtn.addEventListener('click', () => sendAuxCommand('off'));
+    const auxPulseBtn = document.getElementById('aux-pulse-btn');
+    if (auxPulseBtn) auxPulseBtn.addEventListener('click', () => sendAuxCommand('pulse'));
+
     const gpioForm = document.getElementById('gpio-command-form');
     if (gpioForm) gpioForm.addEventListener('submit', handleGpioSubmit);
 
@@ -1581,6 +1588,22 @@ async function sendBuzzerCommand(mode) {
     }
 
     await postDeviceCommand(deviceId, '/buzzer', payload, '부저 명령을 전송했습니다.');
+}
+
+async function sendAuxCommand(mode) {
+    const deviceId = getSelectedDebugDeviceId();
+    if (!deviceId) return;
+
+    const payload = { mode };
+    if (mode === 'pulse') {
+        const durationField = document.getElementById('aux-pulse-duration');
+        const durationValue = durationField ? Number(durationField.value) : NaN;
+        if (!Number.isNaN(durationValue) && durationValue > 0) {
+            payload.duration_ms = durationValue;
+        }
+    }
+
+    await postDeviceCommand(deviceId, '/aux', payload, '보조 출력 명령을 전송했습니다.');
 }
 
 async function handleGpioSubmit(event) {

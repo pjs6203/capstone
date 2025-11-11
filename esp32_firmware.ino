@@ -24,12 +24,12 @@ const int HALL_ADC_PIN = 7;
 const int BUZZER_PIN   = 10;  // 하드웨어에 맞게 조정 (Flash 핀과 충돌하지 않는 GPIO 권장)
 const bool BUZZER_USE_TONE = true;          // 수동형(피에조) 버저면 true, 능동형이면 false
 const bool BUZZER_ACTIVE_HIGH = true;       // BUZZER_USE_TONE=false 일 때 HIGH로 켜지면 true, LOW로 켜지면 false
-// const int RELAY_PIN    = 23; // 필요 시 하드웨어 구성에 맞게 변경 (릴레이 비활성화)
-// const bool RELAY_ACTIVE_HIGH = false; // 릴레이 모듈이 HIGH에서 동작하면 true
+const int AUX_PIN     = 18;                  // 외부 MOSFET(보조 출력) 제어 핀
+const bool AUX_ACTIVE_HIGH = true;          // MOSFET 드라이버가 HIGH 입력에서 켜지면 true
 
 const uint16_t DEFAULT_BUZZER_FREQ = 2000;
 
-// bool relayLatched = false; // 릴레이 상태 추적 비활성화
+bool auxLatched = false;
 bool buzzerLatched = false;
 uint16_t buzzerCurrentFreq = DEFAULT_BUZZER_FREQ;
 
@@ -87,11 +87,11 @@ class StrapServerCallbacks : public BLEServerCallbacks {
 static uint32_t clampRate(uint32_t v){ if(v<50)v=50; if(v>2000)v=2000; return v; }
 void startCalibration(); // fwd
 void sendData(bool force);
-// void handleRelayCommand(const String& rawArg);
+void handleAuxCommand(const String& rawArg);
 void handleBuzzerCommand(const String& rawArg);
 void handleGpioCommand(const String& rawArg);
 bool isSafeGpio(int pinNumber);
-// void setRelayState(bool enabled);
+void setAuxOutput(bool enabled);
 void applyBuzzerOutput(bool enabled, uint16_t freq = DEFAULT_BUZZER_FREQ);
 void stopBuzzerTone();
 uint32_t parseDurationToken(const String& token, uint32_t fallback, uint32_t minValue, uint32_t maxValue);
@@ -122,11 +122,11 @@ class StrapWriteCallbacks : public BLECharacteristicCallbacks {
       snprintf(g_notifyBuf,sizeof(g_notifyBuf),"RESP:BEEP");
     } else if(v == "STATE") {
       snprintf(g_notifyBuf,sizeof(g_notifyBuf),"RESP:STATE=%s", stateNow==STRAP_OPEN?"OPEN":"CLOSED");
-    }
-    // else if(v.startsWith("RELAY:")) {
-    //   handleRelayCommand(v.substring(6));
-    // }
-    else if(v.startsWith("BUZZER:")) {
+    } else if(v.startsWith("AUX:")) {
+      handleAuxCommand(v.substring(4));
+    } else if(v.startsWith("MOSFET:")) {
+      handleAuxCommand(v.substring(7));
+    } else if(v.startsWith("BUZZER:")) {
       handleBuzzerCommand(v.substring(7));
     } else if(v.startsWith("GPIO:")) {
       handleGpioCommand(v.substring(5));
@@ -178,13 +178,11 @@ class StrapWriteCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
-/*
-void setRelayState(bool enabled) {
-  const bool driveHigh = RELAY_ACTIVE_HIGH ? enabled : !enabled;
-  digitalWrite(RELAY_PIN, driveHigh ? HIGH : LOW);
-  relayLatched = enabled;
+void setAuxOutput(bool enabled) {
+  const bool driveHigh = AUX_ACTIVE_HIGH ? enabled : !enabled;
+  digitalWrite(AUX_PIN, driveHigh ? HIGH : LOW);
+  auxLatched = enabled;
 }
-*/
 
 void applyBuzzerOutput(bool enabled, uint16_t freq) {
   if (enabled) {
@@ -240,40 +238,38 @@ bool isSafeGpio(int pinNumber) {
   if (pinNumber >= 6 && pinNumber <= 11) return false;
 #endif
   if (pinNumber == SDA_PIN || pinNumber == SCL_PIN || pinNumber == HALL_ADC_PIN ||
-    pinNumber == BUZZER_PIN) {
+    pinNumber == BUZZER_PIN || pinNumber == AUX_PIN) {
     return false;
   }
   return true;
 }
 
-/*
-void handleRelayCommand(const String& rawArg) {
+void handleAuxCommand(const String& rawArg) {
   String arg = rawArg;
   arg.trim();
   String upper = arg;
   upper.toUpperCase();
 
   if (upper == "ON") {
-    setRelayState(true);
-    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:RELAY=%s", relayLatched ? "ON" : "OFF");
+    setAuxOutput(true);
+    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:AUX=%s", auxLatched ? "ON" : "OFF");
   } else if (upper == "OFF") {
-    setRelayState(false);
-    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:RELAY=%s", relayLatched ? "ON" : "OFF");
+    setAuxOutput(false);
+    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:AUX=%s", auxLatched ? "ON" : "OFF");
   } else if (upper.startsWith("PULSE")) {
     uint32_t duration = 200;
     int sep = arg.indexOf(':');
     if (sep >= 0) {
       duration = parseDurationToken(arg.substring(sep + 1), 200, 20, 5000);
     }
-    setRelayState(true);
+    setAuxOutput(true);
     delay(duration);
-    setRelayState(false);
-    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:RELAY=PULSE,%lu", static_cast<unsigned long>(duration));
+    setAuxOutput(false);
+    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:AUX=PULSE,%lu", static_cast<unsigned long>(duration));
   } else {
-    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:RELAY=ERR");
+    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:AUX=ERR");
   }
 }
-*/
 
 void handleBuzzerCommand(const String& rawArg) {
   String arg = rawArg;
@@ -484,8 +480,8 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, BUZZER_ACTIVE_HIGH ? LOW : HIGH);
   stopBuzzerTone();
-  // pinMode(RELAY_PIN, OUTPUT);
-  // setRelayState(false);
+  pinMode(AUX_PIN, OUTPUT);
+  setAuxOutput(false);
 
   // 초깃값으로 이동평균 채움
   uint16_t v0 = readADCavg(8);
@@ -529,8 +525,10 @@ void loop() {
     Serial.print(" base_no="); Serial.print(baseline_no_mag);
     Serial.print(" delta="); Serial.print(hallOffset);
     Serial.print(" |d|="); Serial.print(diff);
-    if (!calib_done) Serial.print("  [CAL_NOT_DONE]");
-    Serial.println();
+  Serial.print(" Buzzer = "); Serial.print(buzzerLatched);
+  Serial.print(" AUX = "); Serial.print(auxLatched);
+  if (!calib_done) Serial.print("  [CAL_NOT_DONE]");
+  Serial.println();
 
     // 상태 판정 (자동 임계값 사용)
     StrapState target = stateNow;

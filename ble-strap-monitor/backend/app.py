@@ -1224,6 +1224,42 @@ def api_control_buzzer(device_id):
     return _send_command_response(manager, command, extra)
 
 
+@app.route('/api/devices/<device_id>/aux', methods=['POST'])
+@login_required
+def api_control_aux(device_id):
+    device, manager = _resolve_manager(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    if not manager:
+        return jsonify({'error': 'Device manager not initialized'}), 500
+
+    payload = request.json or {}
+    mode_token = payload.get('mode')
+    if mode_token is None:
+        mode_token = payload.get('state')
+    if mode_token is None:
+        mode_token = payload.get('command')
+    if mode_token is None:
+        return jsonify({'error': 'mode 값이 필요합니다.'}), 400
+
+    mode = str(mode_token).strip().lower()
+    if mode in {'1', 'high', 'on', 'true'}:
+        command = 'AUX:ON'
+        extra = {'target': 'aux', 'mode': 'on'}
+    elif mode in {'0', 'low', 'off', 'false'}:
+        command = 'AUX:OFF'
+        extra = {'target': 'aux', 'mode': 'off'}
+    elif mode in {'pulse', 'blink'}:
+        duration = _coerce_int(payload.get('duration_ms'), None)
+        if duration is None:
+            duration = _coerce_int(payload.get('duration'), 200)
+        duration = _clamp(duration or 200, 20, 5000)
+        command = f'AUX:PULSE:{duration}'
+        extra = {'target': 'aux', 'mode': 'pulse', 'duration_ms': duration}
+    else:
+        return jsonify({'error': 'mode 값은 on, off, pulse 중 하나여야 합니다.'}), 400
+
+    return _send_command_response(manager, command, extra)
 @app.route('/api/devices/<device_id>/gpio', methods=['POST'])
 @login_required
 def api_control_gpio(device_id):
