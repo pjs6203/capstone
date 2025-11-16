@@ -17,14 +17,15 @@
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+#include <BLE2902.h>
 
-const int SDA_PIN      = 4;
-const int SCL_PIN      = 5;
-const int HALL_ADC_PIN = 7;
-const int BUZZER_PIN   = 10;  // 하드웨어에 맞게 조정 (Flash 핀과 충돌하지 않는 GPIO 권장)
+const int SDA_PIN      = 21;
+const int SCL_PIN      = 22;
+const int HALL_ADC_PIN = 34;
+const int BUZZER_PIN   = 25;  // 하드웨어에 맞게 조정 (Flash 핀과 충돌하지 않는 GPIO 권장)
 const bool BUZZER_USE_TONE = true;          // 수동형(피에조) 버저면 true, 능동형이면 false
 const bool BUZZER_ACTIVE_HIGH = true;       // BUZZER_USE_TONE=false 일 때 HIGH로 켜지면 true, LOW로 켜지면 false
-const int AUX_PIN     = 14;                  // 외부 MOSFET(보조 출력) 제어 핀 (PWM)
+const int AUX_PIN     = 26;                  // 외부 MOSFET(보조 출력) 제어 핀 (PWM)
 const bool AUX_ACTIVE_HIGH = true;          // MOSFET 드라이버가 HIGH 입력에서 켜지면 true
 const int AUX_PWM_CHANNEL = 6;
 const uint8_t AUX_PWM_RES_BITS = 10;
@@ -35,7 +36,14 @@ const uint32_t AUX_PWM_MAX_DUTY = (1UL << AUX_PWM_RES_BITS) - 1;
 
 const uint16_t DEFAULT_BUZZER_FREQ = 2000;
 
-const int AUX2_PIN     = 16;                 // 두 번째 MOSFET 보조 출력 핀
+// Wear detection helper thresholds (raw hall <= 300, distance <= 150 => close)
+const uint16_t HALL_RAW_CLOSE_MAX = 300;
+const uint16_t HALL_RAW_OPEN_MIN  = 340;   // small hysteresis so tiny noise does not chatter
+
+const uint16_t DEFAULT_DIST_CLOSE = 150;
+const uint16_t DEFAULT_DIST_OPEN  = 180;  // maintain some hysteresis for reopen
+
+const int AUX2_PIN     = 27;                 // 두 번째 MOSFET 보조 출력 핀
 const bool AUX2_ACTIVE_HIGH = true;
 
 bool auxLatched = false;
@@ -75,7 +83,7 @@ struct WearPolicyConfig {
   uint16_t distanceOpen;
 };
 
-WearPolicyConfig wearPolicy = { true, 120, 160 };
+WearPolicyConfig wearPolicy = { true, DEFAULT_DIST_CLOSE, DEFAULT_DIST_OPEN };
 bool policyReceived = false;
 uint16_t lastDistanceMm = 0xFFFF;
 
@@ -340,7 +348,7 @@ bool parsePinStateToken(const String& token, bool& activeHigh) {
 bool isSafeGpio(int pinNumber) {
   if (pinNumber < 0 || pinNumber > 39) return false;
 #if defined(ARDUINO_ARCH_ESP32)
-  if (pinNumber >= 34 && pinNumber <= 39) return false;
+  if (pinNumber >= 34 && pinNumber <= 39 && pinNumber != HALL_ADC_PIN) return false;
   if (pinNumber >= 6 && pinNumber <= 11) return false;
 #endif
   if (pinNumber == SDA_PIN || pinNumber == SCL_PIN || pinNumber == HALL_ADC_PIN ||
@@ -585,6 +593,7 @@ void setupBLE(){
   g_server = BLEDevice::createServer(); g_server->setCallbacks(new StrapServerCallbacks());
   BLEService* svc = g_server->createService(STRAP_SERVICE_UUID);
   g_notify = svc->createCharacteristic(STRAP_NOTIFY_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  g_notify->addDescriptor(new BLE2902()); // allow centrals to enable notifications
   g_notify->setValue("BOOT");
   g_write  = svc->createCharacteristic(STRAP_WRITE_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
   g_write->setCallbacks(new StrapWriteCallbacks());
@@ -750,10 +759,12 @@ void loop() {
   if (!calib_done) Serial.print("  [CAL_NOT_DONE]");
   Serial.println();
 
-    // 상태 판정 (자동 임계값 사용)
+    // 상태 판정 (자동 임계값 + 절대 raw 기준)
     StrapState target = stateNow;
     bool hallSuggestClosed = false;
     bool hallSuggestOpen = false;
+    const bool rawHallSuggestClosed = raw <= HALL_RAW_CLOSE_MAX;
+    const bool rawHallSuggestOpen = raw >= HALL_RAW_OPEN_MIN;
     if (calib_done) {
       if (hallMagDecreases) {
         hallSuggestClosed = hallOffset <= -((int32_t)THRESH_CLOSE_COUNTS);
@@ -768,6 +779,13 @@ void loop() {
       hallSuggestOpen   = diff <= 50;
     }
 
+    if (!hallSuggestClosed && rawHallSuggestClosed) {
+      hallSuggestClosed = true;
+    }
+    if (!hallSuggestOpen && rawHallSuggestOpen) {
+      hallSuggestOpen = true;
+    }
+
     bool distanceValid = (dist != 0xFFFF);
     bool distanceSuggestClosed = false;
     bool distanceSuggestOpen = false;
@@ -777,21 +795,21 @@ void loop() {
     }
 
     if (stateNow == STRAP_OPEN) {
-      bool closeCond = hallSuggestClosed;
+      bool closeCond = hallSuggestClosed && rawHallSuggestClosed;
       if (wearPolicy.distanceEnabled) {
-        closeCond = closeCond && (distanceValid ? distanceSuggestClosed : false);
+        if (!distanceValid) {
+          closeCond = false;
+        } else {
+          closeCond = closeCond && distanceSuggestClosed;
+        }
       }
       if (closeCond) {
         target = STRAP_CLOSED;
       }
     } else {
-      bool openCond = hallSuggestOpen;
-      if (wearPolicy.distanceEnabled) {
-        if (!distanceValid) {
-          openCond = true; // 거리 정보 없으면 안전하게 OPEN
-        } else {
-          openCond = openCond || distanceSuggestOpen;
-        }
+      bool openCond = hallSuggestOpen || rawHallSuggestOpen;
+      if (wearPolicy.distanceEnabled && distanceValid) {
+        openCond = openCond || distanceSuggestOpen;
       }
       if (openCond) {
         target = STRAP_OPEN;
