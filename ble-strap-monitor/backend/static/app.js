@@ -1405,6 +1405,16 @@ function initDebugControls() {
     if (auxOffBtn) auxOffBtn.addEventListener('click', () => sendAuxCommand('off'));
     const auxPulseBtn = document.getElementById('aux-pulse-btn');
     if (auxPulseBtn) auxPulseBtn.addEventListener('click', () => sendAuxCommand('pulse'));
+    const auxPwmBtn = document.getElementById('aux-pwm-btn');
+    if (auxPwmBtn) auxPwmBtn.addEventListener('click', () => sendAuxCommand('pwm'));
+    const aux2OnBtn = document.getElementById('aux2-on-btn');
+    if (aux2OnBtn) aux2OnBtn.addEventListener('click', () => sendAuxCommand('on', 'aux2'));
+    const aux2OffBtn = document.getElementById('aux2-off-btn');
+    if (aux2OffBtn) aux2OffBtn.addEventListener('click', () => sendAuxCommand('off', 'aux2'));
+    const aux2PulseBtn = document.getElementById('aux2-pulse-btn');
+    if (aux2PulseBtn) aux2PulseBtn.addEventListener('click', () => sendAuxCommand('pulse', 'aux2'));
+    const aux2PwmBtn = document.getElementById('aux2-pwm-btn');
+    if (aux2PwmBtn) aux2PwmBtn.addEventListener('click', () => sendAuxCommand('pwm', 'aux2'));
 
     const gpioForm = document.getElementById('gpio-command-form');
     if (gpioForm) gpioForm.addEventListener('submit', handleGpioSubmit);
@@ -1590,17 +1600,28 @@ async function sendBuzzerCommand(mode) {
     await postDeviceCommand(deviceId, '/buzzer', payload, '부저 명령을 전송했습니다.');
 }
 
-async function sendAuxCommand(mode) {
+async function sendAuxCommand(mode, target = 'aux') {
     const deviceId = getSelectedDebugDeviceId();
     if (!deviceId) return;
 
-    const payload = { mode };
-    if (mode === 'pulse') {
-        const durationField = document.getElementById('aux-pulse-duration');
-        const durationValue = durationField ? Number(durationField.value) : NaN;
-        if (!Number.isNaN(durationValue) && durationValue > 0) {
-            payload.duration_ms = durationValue;
+    const payload = { mode, target };
+    if (mode === 'pwm') {
+        const freqField = document.getElementById(target === 'aux2' ? 'aux2-frequency' : 'aux-frequency');
+        const dutyField = document.getElementById(target === 'aux2' ? 'aux2-duty' : 'aux-duty');
+        const freqValue = freqField ? Number(freqField.value) : NaN;
+        if (Number.isNaN(freqValue) || freqValue <= 0) {
+            showNotification('유효한 PWM 주파수를 입력하세요.', 'danger');
+            return;
         }
+        const dutyValue = dutyField ? Number(dutyField.value) : NaN;
+        if (Number.isNaN(dutyValue) || dutyValue < 0) {
+            showNotification('유효한 듀티비(0~100)를 입력하세요.', 'danger');
+            return;
+        }
+        const freqClamped = Math.min(Math.max(Math.round(freqValue), 20), 40000);
+        const dutyClamped = Math.min(Math.max(Math.round(dutyValue), 0), 100);
+        payload.frequency_hz = freqClamped;
+        payload.duty_percent = dutyClamped;
     }
 
     await postDeviceCommand(deviceId, '/aux', payload, '보조 출력 명령을 전송했습니다.');

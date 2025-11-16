@@ -1242,22 +1242,48 @@ def api_control_aux(device_id):
     if mode_token is None:
         return jsonify({'error': 'mode 값이 필요합니다.'}), 400
 
+    target_token = payload.get('target', 'aux')
+    target = str(target_token).strip().lower()
+    if target not in {'aux', 'aux2'}:
+        return jsonify({'error': 'target 값은 aux 또는 aux2 여야 합니다.'}), 400
+
+    prefix = 'AUX2' if target == 'aux2' else 'AUX'
+
     mode = str(mode_token).strip().lower()
     if mode in {'1', 'high', 'on', 'true'}:
-        command = 'AUX:ON'
-        extra = {'target': 'aux', 'mode': 'on'}
+        command = f'{prefix}:ON'
+        extra = {'target': target, 'mode': 'on'}
     elif mode in {'0', 'low', 'off', 'false'}:
-        command = 'AUX:OFF'
-        extra = {'target': 'aux', 'mode': 'off'}
+        command = f'{prefix}:OFF'
+        extra = {'target': target, 'mode': 'off'}
     elif mode in {'pulse', 'blink'}:
-        duration = _coerce_int(payload.get('duration_ms'), None)
-        if duration is None:
-            duration = _coerce_int(payload.get('duration'), 200)
-        duration = _clamp(duration or 200, 20, 5000)
-        command = f'AUX:PULSE:{duration}'
-        extra = {'target': 'aux', 'mode': 'pulse', 'duration_ms': duration}
+        command = f'{prefix}:PULSE'
+        extra = {'target': target, 'mode': 'pulse'}
+    elif mode == 'pwm':
+        freq = _coerce_int(payload.get('frequency_hz'), None)
+        if freq is None:
+            freq = _coerce_int(payload.get('frequency'), None)
+        if freq is None:
+            freq = 2000
+
+        duty = _coerce_int(payload.get('duty_percent'), None)
+        if duty is None:
+            duty = _coerce_int(payload.get('duty'), None)
+        if duty is None:
+            duty = 50
+
+        freq = _clamp(freq, 20, 40000)
+        duty = _clamp(duty, 0, 100)
+
+        command = f'{prefix}:PWM:{freq}:{duty}'
+        extra = {
+            'target': target,
+            'mode': 'pwm',
+            'frequency_hz': freq,
+            'duty_percent': duty
+        }
     else:
-        return jsonify({'error': 'mode 값은 on, off, pulse 중 하나여야 합니다.'}), 400
+        return jsonify({'error': 'mode 값은 on, off, pulse, pwm 중 하나여야 합니다.'}), 400
 
     return _send_command_response(manager, command, extra)
 @app.route('/api/devices/<device_id>/gpio', methods=['POST'])

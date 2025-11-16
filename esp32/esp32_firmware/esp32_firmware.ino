@@ -26,13 +26,22 @@ const int HALL_ADC_PIN = 7;
 const int BUZZER_PIN   = 10;  // 하드웨어에 맞게 조정 (Flash 핀과 충돌하지 않는 GPIO 권장)
 const bool BUZZER_USE_TONE = true;          // 수동형(피에조) 버저면 true, 능동형이면 false
 const bool BUZZER_ACTIVE_HIGH = true;       // BUZZER_USE_TONE=false 일 때 HIGH로 켜지면 true, LOW로 켜지면 false
-const int AUX_PIN     = 18;                  // 외부 MOSFET(보조 출력) 제어 핀
+const int AUX_PIN     = 14;                  // 외부 MOSFET(보조 출력) 제어 핀 (PWM 전용)
 const bool AUX_ACTIVE_HIGH = true;          // MOSFET 드라이버가 HIGH 입력에서 켜지면 true
+const int AUX_PWM_CHANNEL = 6;
+const uint8_t AUX_PWM_RES_BITS = 10;
+const uint32_t AUX_PWM_MIN_FREQ = 20;
+const uint32_t AUX_PWM_MAX_FREQ = 40000;
+const uint32_t AUX_PWM_DEFAULT_FREQ = 2000;
+const uint32_t AUX_PWM_MAX_DUTY = (1UL << AUX_PWM_RES_BITS) - 1;
 
 const uint16_t DEFAULT_BUZZER_FREQ = 2000;
 
 bool auxLatched = false;
 bool buzzerLatched = false;
+uint32_t auxCurrentFreq = AUX_PWM_DEFAULT_FREQ;
+uint8_t auxCurrentDuty = 0;
+bool auxPwmAttached = false;
 uint16_t buzzerCurrentFreq = DEFAULT_BUZZER_FREQ;
 
 VL53L0X tof;
@@ -94,6 +103,8 @@ void handleBuzzerCommand(const String& rawArg);
 void handleGpioCommand(const String& rawArg, bool force = false);
 bool isSafeGpio(int pinNumber);
 void setAuxOutput(bool enabled);
+void configureAuxPwm(uint32_t freqHz);
+void applyAuxDutyPercent(uint8_t dutyPercent);
 void applyBuzzerOutput(bool enabled, uint16_t freq = DEFAULT_BUZZER_FREQ);
 void stopBuzzerTone();
 uint32_t parseDurationToken(const String& token, uint32_t fallback, uint32_t minValue, uint32_t maxValue);
@@ -196,10 +207,47 @@ class StrapWriteCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
+void configureAuxPwm(uint32_t freqHz) {
+  uint32_t clamped = freqHz;
+  if (clamped < AUX_PWM_MIN_FREQ) clamped = AUX_PWM_MIN_FREQ;
+  if (clamped > AUX_PWM_MAX_FREQ) clamped = AUX_PWM_MAX_FREQ;
+
+  if (!auxPwmAttached || clamped != auxCurrentFreq) {
+#if defined(ARDUINO_ARCH_ESP32)
+    analogWriteResolution(AUX_PWM_RES_BITS);
+    analogWriteFrequency(AUX_PIN, clamped);
+#endif
+    auxCurrentFreq = clamped;
+    auxPwmAttached = true;
+  }
+}
+
+void applyAuxDutyPercent(uint8_t dutyPercent) {
+  if (!auxPwmAttached) {
+    configureAuxPwm(auxCurrentFreq);
+  }
+
+  uint8_t bounded = dutyPercent > 100 ? 100 : dutyPercent;
+  auxCurrentDuty = bounded;
+
+#if defined(ARDUINO_ARCH_ESP32)
+  analogWriteResolution(AUX_PWM_RES_BITS);
+  uint32_t level = (AUX_PWM_MAX_DUTY * bounded) / 100;
+  if (!AUX_ACTIVE_HIGH) {
+    level = AUX_PWM_MAX_DUTY - level;
+  }
+  analogWrite(AUX_PIN, level);
+#else
+  const bool drive = AUX_ACTIVE_HIGH ? (bounded > 0) : (bounded == 0);
+  digitalWrite(AUX_PIN, drive ? HIGH : LOW);
+#endif
+
+  auxLatched = bounded > 0;
+}
+
 void setAuxOutput(bool enabled) {
-  const bool driveHigh = AUX_ACTIVE_HIGH ? enabled : !enabled;
-  digitalWrite(AUX_PIN, driveHigh ? HIGH : LOW);
-  auxLatched = enabled;
+  configureAuxPwm(auxCurrentFreq);
+  applyAuxDutyPercent(enabled ? 100 : 0);
 }
 
 void applyBuzzerOutput(bool enabled, uint16_t freq) {
@@ -284,6 +332,44 @@ void handleAuxCommand(const String& rawArg) {
     delay(duration);
     setAuxOutput(false);
     snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:AUX=PULSE,%lu", static_cast<unsigned long>(duration));
+  } else if (upper.startsWith("PWM")) {
+    int first = arg.indexOf(':');
+    if (first < 0) {
+      snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:AUX=ERR,PWM");
+      return;
+    }
+    String payload = arg.substring(first + 1);
+    payload.trim();
+    if (!payload.length()) {
+      snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:AUX=ERR,PWM");
+      return;
+    }
+
+    int second = payload.indexOf(':');
+    String freqToken = (second < 0) ? payload : payload.substring(0, second);
+    String dutyToken = (second < 0) ? "" : payload.substring(second + 1);
+    freqToken.trim(); dutyToken.trim();
+
+    long freqParsed = freqToken.toInt();
+    if (freqParsed <= 0) freqParsed = AUX_PWM_DEFAULT_FREQ;
+    uint32_t freq = static_cast<uint32_t>(freqParsed);
+    if (freq < AUX_PWM_MIN_FREQ) freq = AUX_PWM_MIN_FREQ;
+    if (freq > AUX_PWM_MAX_FREQ) freq = AUX_PWM_MAX_FREQ;
+
+    uint8_t duty = auxCurrentDuty;
+    if (dutyToken.length() > 0) {
+      long dutyParsed = dutyToken.toInt();
+      if (dutyParsed < 0) dutyParsed = 0;
+      if (dutyParsed > 100) dutyParsed = 100;
+      duty = static_cast<uint8_t>(dutyParsed);
+    } else if (!auxLatched) {
+      duty = 50;
+    }
+
+    configureAuxPwm(freq);
+    applyAuxDutyPercent(duty);
+    snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:AUX=PWM,%lu,%u",
+             static_cast<unsigned long>(auxCurrentFreq), auxCurrentDuty);
   } else {
     snprintf(g_notifyBuf, sizeof(g_notifyBuf), "RESP:AUX=ERR");
   }
@@ -529,7 +615,9 @@ void setup() {
   digitalWrite(BUZZER_PIN, BUZZER_ACTIVE_HIGH ? LOW : HIGH);
   stopBuzzerTone();
   pinMode(AUX_PIN, OUTPUT);
-  setAuxOutput(false);
+  digitalWrite(AUX_PIN, AUX_ACTIVE_HIGH ? LOW : HIGH);
+  configureAuxPwm(AUX_PWM_DEFAULT_FREQ);
+  applyAuxDutyPercent(0);
 
   // 초깃값으로 이동평균 채움
   uint16_t v0 = readADCavg(8);
