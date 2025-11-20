@@ -759,32 +759,12 @@ void loop() {
   if (!calib_done) Serial.print("  [CAL_NOT_DONE]");
   Serial.println();
 
-    // 상태 판정 (자동 임계값 + 절대 raw 기준)
+    // 상태 판정 (Hall 은 raw 값만 사용)
     StrapState target = stateNow;
-    bool hallSuggestClosed = false;
-    bool hallSuggestOpen = false;
     const bool rawHallSuggestClosed = raw <= HALL_RAW_CLOSE_MAX;
     const bool rawHallSuggestOpen = raw >= HALL_RAW_OPEN_MIN;
-    if (calib_done) {
-      if (hallMagDecreases) {
-        hallSuggestClosed = hallOffset <= -((int32_t)THRESH_CLOSE_COUNTS);
-        hallSuggestOpen   = hallOffset >= -((int32_t)THRESH_OPEN_COUNTS);
-      } else {
-        hallSuggestClosed = hallOffset >= (int32_t)THRESH_CLOSE_COUNTS;
-        hallSuggestOpen   = hallOffset <= (int32_t)THRESH_OPEN_COUNTS;
-      }
-    } else {
-      // fallback: 보수적 임계값
-      hallSuggestClosed = diff >= 300;
-      hallSuggestOpen   = diff <= 50;
-    }
-
-    if (!hallSuggestClosed && rawHallSuggestClosed) {
-      hallSuggestClosed = true;
-    }
-    if (!hallSuggestOpen && rawHallSuggestOpen) {
-      hallSuggestOpen = true;
-    }
+    bool hallSuggestClosed = rawHallSuggestClosed;
+    bool hallSuggestOpen = rawHallSuggestOpen;
 
     bool distanceValid = (dist != 0xFFFF);
     bool distanceSuggestClosed = false;
@@ -795,7 +775,7 @@ void loop() {
     }
 
     if (stateNow == STRAP_OPEN) {
-      bool closeCond = hallSuggestClosed && rawHallSuggestClosed;
+      bool closeCond = hallSuggestClosed;
       if (wearPolicy.distanceEnabled) {
         if (!distanceValid) {
           closeCond = false;
@@ -807,7 +787,7 @@ void loop() {
         target = STRAP_CLOSED;
       }
     } else {
-      bool openCond = hallSuggestOpen || rawHallSuggestOpen;
+      bool openCond = hallSuggestOpen;
       if (wearPolicy.distanceEnabled && distanceValid) {
         openCond = openCond || distanceSuggestOpen;
       }
